@@ -409,7 +409,7 @@ Grants: `read_project`, `spawn:ssh`, `spawn:schemify-interop` (fallback only), `
 
 ## 5. Simulators: Spectre and HSPICE through ESPice
 
-ESPice (github.com/OmarSiwy/ESPice) reads three netlist dialects, chosen with `--tokenizer`:
+ESPice (github.com/OpenFAT/EGSpice) reads three netlist dialects, chosen with `--tokenizer`:
 `ngspice`, `hspice` and `spectre` (ESPice `docs/using/dialects.md:3-8`, `cli.md:25`).
 
 In Spectre mode it reads (ESPice `dialects.md:141-170`):

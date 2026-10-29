@@ -1,9 +1,9 @@
 # Schemify PDK Manager
 
-A [Schemify](https://github.com/OmarSiwy/Schemify) plugin that installs PDKs per project, switches
+A [Schemify](https://github.com/OpenFAT/Schemify) plugin that installs PDKs per project, switches
 a design between versions and technologies by rewriting `schemify.project`, and removes what no
 project references. The behaviour is specified in Schemify's
-[docs/spec/pdk.md](https://github.com/OmarSiwy/Schemify/blob/main/docs/spec/pdk.md).
+[docs/spec/pdk.md](https://github.com/OpenFAT/Schemify/blob/main/docs/spec/pdk.md).
 
 | Family | Source | Needs on `PATH` |
 |---|---|---|
@@ -22,7 +22,7 @@ In your Schemify config (`init.lua`), then `schemify pack sync`:
 ```lua
 schemify.pack.add {
   {
-    src = "https://github.com/OmarSiwy/Schemify-PDK-Manager",
+    src = "https://github.com/OpenFAT/PDK-Manager",
     grant = {
       "read_project", "write_project",
       "spawn:ciel", "spawn:schemify-interop",  -- ciel families
@@ -90,9 +90,9 @@ committed `pdk_manager.wasm` differs, so commit the module with the source chang
 To test against a local Schemify checkout, without changing `Cargo.toml`:
 
 ```sh
-cargo test --config 'patch."https://github.com/OmarSiwy/Schemify".schemify-abi.path="../Schemify/crates/abi"' \
-           --config 'patch."https://github.com/OmarSiwy/Schemify".schemify-format.path="../Schemify/crates/format"' \
-           --config 'patch."https://github.com/OmarSiwy/Schemify".schemify-plugin.path="../Schemify/crates/plugin"'
+cargo test --config 'patch."https://github.com/OpenFAT/Schemify".schemify-abi.path="../Schemify/crates/abi"' \
+           --config 'patch."https://github.com/OpenFAT/Schemify".schemify-format.path="../Schemify/crates/format"' \
+           --config 'patch."https://github.com/OpenFAT/Schemify".schemify-plugin.path="../Schemify/crates/plugin"'
 ```
 
 The patch rewrites `Cargo.lock`; restore it (`git checkout Cargo.lock`) before committing.

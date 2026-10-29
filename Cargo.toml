@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.95"
-repository = "https://github.com/OmarSiwy/Schemify-PDK-Manager"
+repository = "https://github.com/OpenFAT/PDK-Manager"
 publish = false
 
 [lib]
@@ -35,9 +35,9 @@ resolver = "3"
 # The Schemify crates, pinned to one Schemify commit. Bump all three together; the nightly CI
 # job builds against Schemify `main` to catch drift early.
 [workspace.dependencies]
-schemify-abi = { git = "https://github.com/OmarSiwy/Schemify", rev = "7a37e03be23fbc3fb743fa53c6430e7ab77941a0", features = ["guest"] }
-schemify-format = { git = "https://github.com/OmarSiwy/Schemify", rev = "7a37e03be23fbc3fb743fa53c6430e7ab77941a0" }
-schemify-plugin = { git = "https://github.com/OmarSiwy/Schemify", rev = "7a37e03be23fbc3fb743fa53c6430e7ab77941a0" }
+schemify-abi = { git = "https://github.com/OpenFAT/Schemify", rev = "1752960b3906f9b29765222531b5bfe29e8f6542", features = ["guest"] }
+schemify-format = { git = "https://github.com/OpenFAT/Schemify", rev = "1752960b3906f9b29765222531b5bfe29e8f6542" }
+schemify-plugin = { git = "https://github.com/OpenFAT/Schemify", rev = "1752960b3906f9b29765222531b5bfe29e8f6542" }
 
 # Small module: size over speed, no unwinding (a panic is a trap the host reports).
 [profile.release]
