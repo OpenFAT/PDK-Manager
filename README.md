@@ -1,19 +1,109 @@
-# Schemify PDK Manager
+<div align="center">
 
-A [Schemify](https://github.com/OpenFAT/Schemify) plugin that installs PDKs per project, switches
-a design between versions and technologies by rewriting `schemify.project`, and removes what no
-project references. The behaviour is specified in Schemify's
-[docs/spec/pdk.md](https://github.com/OpenFAT/Schemify/blob/main/docs/spec/pdk.md).
+# PDK Manager
 
-| Family | Source | Needs on `PATH` |
-|---|---|---|
-| `sky130`, `gf180mcu`, `ihp-sg13g2` | [ciel](https://github.com/fossi-foundation/ciel) (open_pdks builds); xschem symbols imported | `ciel`, `schemify-interop` |
-| `freepdk45` | a pinned, sha256-checked download; device cells generated | `curl`, `tar` |
-| `asap7` | a pinned `git` checkout; device cells generated, BSIM-CMG through OSDI | `git` |
+**Swap the process under your schematic with one command.**
 
-Any family also installs from a kit already on disk: `pdk.install <family> <name> <path>`.
+A [Schemify](https://github.com/OpenFAT/Schemify) plugin that installs PDKs into your project and
+switches a design between technologies by rewriting `schemify.project`. You don't touch the
+schematic.
 
-The plugin needs `spawn`, so it runs in the native editor only, not in the browser.
+[![ci](https://github.com/OpenFAT/PDK-Manager/actions/workflows/ci.yml/badge.svg)](https://github.com/OpenFAT/PDK-Manager/actions/workflows/ci.yml)
+[![nightly](https://github.com/OpenFAT/PDK-Manager/actions/workflows/nightly.yml/badge.svg)](https://github.com/OpenFAT/PDK-Manager/actions/workflows/nightly.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+`sky130` · `gf180mcu` · `ihp-sg13g2` · `freepdk45` · `asap7` · your own kit
+
+</div>
+
+---
+
+```
+pdk.install sky130 <version>      # fetch it into .schemify/pdks/
+pdk.use     sky130 <version>      # point the project at it
+```
+
+Draw once with `tech:nmos` and `tech:pmos`, then try the same inverter in 130 nm, 180 nm, 45 nm
+and 7 nm FinFET. The plugin updates the manifest, and the shipped tech maps turn every class
+device into the right cell with the right parameters for the new kit: microns for sky130, fin
+counts for ASAP7.
+
+## Why
+
+- **Your design stays the same.** Switching rewrites only the PDK lines of `schemify.project`.
+  Your libraries, settings, plugins and comments are kept byte for byte.
+- **Benches carry over.** `set PDK_MODELS` always names the active kit's corner file, so a bench
+  corner written as `lib ${PDK_MODELS} tt` runs against whichever PDK is in use.
+- **Installs are per project.** Each version lives under `.schemify/pdks/<family>/<version>/`.
+  Two projects can use two versions of the same PDK without stepping on each other.
+- **Cleanup is safe.** `pdk.prune` removes only what nothing references. It never removes the
+  active install or one pinned by `schemify.lock`.
+- **Tested end to end.** CI drives the built module through the real Schemify plugin host. The
+  network tests install FreePDK45 and ASAP7 for real and simulate the same `tech:` inverter in
+  ngspice on both.
+
+## What a switch does
+
+`pdk.use gf180mcu <version>` on a project that was using sky130:
+
+```diff
+ schemify 1 project
+
+ # my own library
+ lib mine path lib
+-lib sky130_fd_pr path .schemify/pdks/sky130/<old>/lib/sky130_fd_pr
+-lib tech map .schemify/pdks/sky130/<old>/tech.map
+
+ plugin pdk-manager path plugins/pdk-manager
+   grant write_project
+
+-set PDK_ROOT .schemify/pdks/sky130/<old>/root
+-set SKYWATER_MODELS ${PDK_ROOT}/${PDK}/libs.tech/combined
+ set MINE 1
++
++lib gf180mcu_fd_pr path .schemify/pdks/gf180mcu/<new>/lib/gf180mcu_fd_pr
++lib tech map .schemify/pdks/gf180mcu/<new>/tech.map
++
++set PDK_ROOT .schemify/pdks/gf180mcu/<new>/root
++set PDK gf180mcuD
++set PDK_MODELS ${PDK_ROOT}/gf180mcuD/libs.tech/ngspice/sm141064.ngspice
++set GF_MODELS ${PDK_ROOT}/${PDK}/libs.tech/ngspice
+```
+
+This is the expected output of the `use_rewrites_only_what_it_owns` test in `src/lib.rs`. The
+plugin removes every `lib` and `set` that pointed into the store, plus `lib tech`, keeps
+everything else, and appends the new kit's lines.
+
+## Supported PDKs
+
+| Family | Node | Source | Versions | Needs on `PATH` |
+|---|---|---|---|---|
+| `sky130` | 130 nm | [ciel](https://github.com/fossi-foundation/ciel) (open_pdks builds), xschem symbols imported | any ciel lists | `ciel`, `schemify-interop` |
+| `gf180mcu` | 180 nm | ciel, xschem symbols imported | any ciel lists | `ciel`, `schemify-interop` |
+| `ihp-sg13g2` | 130 nm SiGe BiCMOS | ciel, xschem symbols imported | any ciel lists | `ciel`, `schemify-interop` |
+| `freepdk45` | 45 nm | pinned, sha256-checked download; device cells generated | `5b93a0b1e12d` | `curl`, `tar` |
+| `asap7` | 7 nm FinFET | pinned `git` checkout; device cells generated, BSIM-CMG through OSDI | `58d72c9d291e186a77468586ab0c43d8a21eda6a` | `git` |
+
+**Bring your own kit.** Any family also installs from a copy you already have on disk, such as a
+registered NCSU FreePDK45:
+
+```
+pdk.install freepdk45 ncsu /opt/FreePDK45
+```
+
+### Technology classes
+
+The class names a `tech:` device resolves through, from `maps/`:
+
+| Family | `nmos` / `pmos` classes |
+|---|---|
+| `sky130`, `gf180mcu`, `ihp-sg13g2` | `core` |
+| `freepdk45` | `core` (VTL), `hvt` (VTH), `io` (thick oxide) |
+| `asap7` | `core` (RVT), `lvt` |
+
+To use a device that has no class, place it directly, for example `freepdk45:nmos_vtg` or
+`asap7:nmos_slvt`. On ASAP7 the gate length is fixed at 21 nm by the model cards, so the class
+`l` is ignored and `w` becomes a fin count.
 
 ## Install
 
@@ -25,7 +115,7 @@ schemify.pack.add {
     src = "https://github.com/OpenFAT/PDK-Manager",
     grant = {
       "read_project", "write_project",
-      "spawn:ciel", "spawn:schemify-interop",  -- ciel families
+      "spawn:ciel", "spawn:schemify-interop",  -- sky130, gf180mcu, ihp-sg13g2
       "spawn:git",                             -- asap7
       "spawn:curl", "spawn:tar",               -- freepdk45
     },
@@ -33,12 +123,14 @@ schemify.pack.add {
 }
 ```
 
-The repository root is the package: `schemify.project` names the module (`pdk_manager.wasm`,
-committed) and the grants it requests. It gets the intersection of those and your `grant` list,
-so leave out the families you don't use; `schemify pack status` shows what was denied. Pin a
-commit with `rev = "<sha>"`.
+The plugin gets only the grants that appear both in your list and in its own `schemify.project`,
+so leave out the spawns for families you don't use. `schemify pack status` shows anything that
+was denied. To pin a commit, add `rev = "<sha>"`.
 
-Or per project, with a checkout of this repository, in the project's `schemify.project`:
+<details>
+<summary>Or load it in a single project, from a checkout</summary>
+
+Add this to the project's `schemify.project`:
 
 ```
 plugin pdk-manager path <checkout>/pdk_manager.wasm
@@ -51,28 +143,36 @@ plugin pdk-manager path <checkout>/pdk_manager.wasm
   grant spawn:tar
 ```
 
+</details>
+
+> [!NOTE]
+> The plugin needs `spawn`, so it only runs in the native editor. It does not work in the
+> browser build.
+
 ## Use
 
-**View ▸ PDKs** (command `pdk.panel`) opens the panel: installed versions with Use and Remove,
-the available versions of a family, and the running install's steps. Every action is also a
-command, so scripts and the JSON-RPC interface can drive it:
+**View ▸ PDKs** (command `pdk.panel`) opens the panel. It lists installed versions with **Use**
+and **Remove** buttons, the versions available for a family, and the steps of a running install.
 
-| Command | Does |
+Everything the panel does is also a command, so scripts and the JSON-RPC interface can drive it:
+
+| Command | What it does |
 |---|---|
 | `pdk.install <family> <version>` | Installs into `.schemify/pdks/<family>/<version>/` |
-| `pdk.install <family> <name> <path>` | Installs a kit already on disk |
-| `pdk.use <family> <version>` | Points the project's manifest at that install (`lib`, `lib tech map`, `set PDK_ROOT`, `set PDK_MODELS`) |
-| `pdk.remove <family> <version>` | Removes an install; refuses the active and the locked one |
+| `pdk.install <family> <name> <path>` | Installs a kit you already have on disk |
+| `pdk.use <family> <version>` | Switches the project to that install (`lib`, `lib tech map`, `set PDK_ROOT`, `set PDK_MODELS`) |
+| `pdk.remove <family> <version>` | Removes an install. Refuses the active one and the locked one |
 | `pdk.prune`, then `pdk.prune.confirm` | Lists, then removes, every install nothing references |
-| `pdk.list_remote` | Refreshes the available versions of the open family |
+| `pdk.list_remote [family]` | Refreshes the versions available for a family |
 
-Designs drawn with `tech:nmos` / `tech:pmos` retarget between families through the shipped maps
-(`maps/`).
+The full behaviour is specified in Schemify's
+[docs/spec/pdk.md](https://github.com/OpenFAT/Schemify/blob/main/docs/spec/pdk.md). Remote and
+proprietary PDKs are a design in progress, in [docs/remote-pdks.md](docs/remote-pdks.md).
 
 ## Develop
 
 The plugin is a Rust crate built for `wasm32-unknown-unknown`. The Schemify crates it uses
-(`schemify-abi`, and `schemify-format` and `schemify-plugin` for tests) are git dependencies
+(`schemify-abi`, plus `schemify-format` and `schemify-plugin` for tests) are git dependencies,
 pinned to one Schemify commit in `Cargo.toml`.
 
 ```sh
@@ -82,12 +182,15 @@ cargo test                   # pure modules, then the built guest through the re
 cargo test -- --ignored      # network: real ciel, FreePDK45 and ASAP7 installs simulated in ngspice
 ```
 
-`build.sh` is byte-reproducible under `nix develop`: CI rebuilds the module and fails if the
-committed `pdk_manager.wasm` differs, so commit the module with the source change (or the
-`pdk-manager-wasm` artifact of the CI run). A nightly job builds and tests against Schemify
-`main`; when it goes red, bump `rev` in `Cargo.toml` and fix.
+<details>
+<summary>Reproducible module, nightly drift, local Schemify checkout</summary>
 
-To test against a local Schemify checkout, without changing `Cargo.toml`:
+`build.sh` produces the same bytes every time under `nix develop`. CI rebuilds the module and
+fails if the committed `pdk_manager.wasm` differs, so commit the module together with the source
+change, or commit the `pdk-manager-wasm` artifact from the CI run. A nightly job builds and tests
+against Schemify `main`. When it goes red, bump `rev` in `Cargo.toml` and fix whatever broke.
+
+To test against a local Schemify checkout without editing `Cargo.toml`:
 
 ```sh
 cargo test --config 'patch."https://github.com/OpenFAT/Schemify".schemify-abi.path="../Schemify/crates/abi"' \
@@ -95,11 +198,15 @@ cargo test --config 'patch."https://github.com/OpenFAT/Schemify".schemify-abi.pa
            --config 'patch."https://github.com/OpenFAT/Schemify".schemify-plugin.path="../Schemify/crates/plugin"'
 ```
 
-The patch rewrites `Cargo.lock`; restore it (`git checkout Cargo.lock`) before committing.
+The patch rewrites `Cargo.lock`. Restore it (`git checkout Cargo.lock`) before you commit.
 
-`devices/` and `tests/fixtures/schemify/` hold copies of Schemify files (see the README in
-each); keep them in step when you bump `rev`.
+`devices/` and `tests/fixtures/schemify/` hold copies of Schemify files (each has a README).
+Update them whenever you bump `rev`.
+
+**Adding a family** means adding one row to `RECIPES` in `src/lib.rs` and a tech map in `maps/`.
+
+</details>
 
 ## License
 
-MIT
+[MIT](LICENSE)
