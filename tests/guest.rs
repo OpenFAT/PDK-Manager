@@ -964,7 +964,18 @@ fn exports_spawn_interop_on_local_installs() {
             "schemify-interop virtuoso-export .schemify/pdks/sky130/{V1}/lib . -o ../export/sky130.sfyx"
         )]
     );
-    for bad in ["freepdk45 ncsu spectre", "freepdk45 ncsu", "nope v xschem"] {
+    // A model dialect is converted from the kit itself: the local path `ROOT` records.
+    w.cmd("pdk.export", "freepdk45 ncsu spectre");
+    let log = w.take_log();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(
+        log[0].starts_with(&format!(
+            "schemify-interop pdk-models --root {} --entry ",
+            ext.display()
+        )) && log[0].ends_with(&format!("--from spice --to spectre -o {d}/export/spectre")),
+        "{log:?}"
+    );
+    for bad in ["freepdk45 ncsu eldo", "freepdk45 ncsu", "nope v xschem"] {
         w.cmd("pdk.export", bad);
         assert!(w.take_log().is_empty(), "{bad}");
     }
@@ -1108,11 +1119,8 @@ fn real_kits_simulate_an_inverter() {
             w.ui(),
             w.faults()
         );
-        // The store holds the kit's models as SpiceRack IR, and a dialect comes out of it.
-        let corners = std::fs::read_dir(dir.join(&d).join("rack"))
-            .map(|d| d.count())
-            .unwrap_or(0);
-        assert!(corners > 0, "no store under {d}/rack\n{}", w.ui());
+        // The kit's own files are the store: a dialect is written from them on demand.
+        assert!(!dir.join(&d).join("rack").exists(), "no IR copy of the kit");
         w.cmd("pdk.export", &format!("{family} {version} spectre"));
         assert!(
             dir.join(&d).join("export/spectre").is_dir(),

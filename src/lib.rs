@@ -430,7 +430,9 @@ pub fn import_argv(r: &Recipe, version: &str, root: &str) -> Vec<String> {
     argv
 }
 
-/// The simulator dialects `pdk.export` writes a local install's models in, from its store.
+/// The simulator dialects `pdk.export` writes a local install's models in. The store is the
+/// kit's own files (`ROOT`, or `<dir>/root`) read from [`model_entries`] in order, converted
+/// on demand: the source is the only lossless form.
 pub const MODEL_DIALECTS: [&str; 5] = ["spice", "hspice", "spectre", "vacask", "xyce"];
 
 /// The kit's model files relative to its root: the sectioned file, or every corner's files.
@@ -463,36 +465,25 @@ fn models_argv(r: &Recipe, root: &str, from: &str, to: &str, o: String) -> Vec<S
     a
 }
 
-/// The install step writing the store: the kit's model files (read as ngspice, as Schemify
-/// runs them) as SpiceRack IR under `<dir>/rack`, same relative paths as under `root`.
-pub fn store_argv(r: &Recipe, version: &str, root: &str) -> Vec<String> {
-    let o = format!("{}/rack", version_dir(r.family, version));
-    models_argv(r, root, "spice", "rack", o)
+/// `pdk.export <family> <version> <dialect>`: the kit's model files under `root` (read as
+/// ngspice, as Schemify runs them) in [`MODEL_DIALECTS`] `to`, into `<dir>/export/<to>`.
+pub fn models_export_argv(r: &Recipe, version: &str, root: &str, to: &str) -> Vec<String> {
+    assert!(MODEL_DIALECTS.contains(&to));
+    let o = format!("{}/export/{to}", version_dir(r.family, version));
+    models_argv(r, root, "spice", to, o)
 }
 
 /// `to` is `xschem` or `virtuoso`: `schemify-interop xschem-export|virtuoso-export <dir>/lib .
 /// -o ../export/xschem|../export/<family>.sfyx`. The install's library directory is the
 /// project (its `schemify.project` names the library; the paths after it are relative to
 /// it), and `.` names every cell file under it (Interop expands a directory), so imported
-/// families export too: the plugin cannot list their cells itself.
-///
-/// `to` one of [`MODEL_DIALECTS`]: the models in that dialect from the store
-/// (`<dir>/rack`, [`store_argv`]) into `<dir>/export/<to>`.
+/// families export too: the plugin cannot list their cells itself. Model dialects:
+/// [`models_export_argv`].
 pub fn export_argv(r: &Recipe, version: &str, to: &str) -> Vec<String> {
-    let dir = version_dir(r.family, version);
-    if MODEL_DIALECTS.contains(&to) {
-        return models_argv(
-            r,
-            &format!("{dir}/rack"),
-            "rack",
-            to,
-            format!("{dir}/export/{to}"),
-        );
-    }
     let (cmd, o) = match to {
         "xschem" => ("xschem-export", "../export/xschem".to_owned()),
         "virtuoso" => ("virtuoso-export", format!("../export/{}.sfyx", r.family)),
-        _ => panic!("export to xschem, virtuoso or a model dialect, not {to}"),
+        _ => panic!("export to xschem or virtuoso, not {to}"),
     };
     vec![
         "schemify-interop".to_owned(),
@@ -1202,27 +1193,15 @@ mod tests {
     }
 
     #[test]
-    fn the_store_and_model_exports_name_every_model_file() {
+    fn model_exports_read_the_kit_itself_and_name_every_model_file() {
         let sky = recipe("sky130").unwrap();
-        let a = store_argv(sky, "v", ".schemify/pdks/sky130/v/root");
-        let want = "schemify-interop pdk-models --root .schemify/pdks/sky130/v/root \
-             --entry sky130A/libs.tech/combined/sky130.lib.spice --from spice --to rack \
-             -o .schemify/pdks/sky130/v/rack";
+        let a = models_export_argv(sky, "v", "/pdk", "spectre");
+        let want = "schemify-interop pdk-models --root /pdk \
+             --entry sky130A/libs.tech/combined/sky130.lib.spice --from spice --to spectre \
+             -o .schemify/pdks/sky130/v/export/spectre";
         assert_eq!(
             a.join(" "),
             want.split_whitespace().collect::<Vec<_>>().join(" ")
-        );
-        let e = export_argv(sky, "v", "spectre");
-        assert_eq!(e[3], ".schemify/pdks/sky130/v/rack");
-        assert_eq!(
-            e[e.len() - 5..],
-            [
-                "rack",
-                "--to",
-                "spectre",
-                "-o",
-                ".schemify/pdks/sky130/v/export/spectre"
-            ]
         );
         // A kit with a file per corner: each file once.
         let f = model_entries(recipe("freepdk45").unwrap());

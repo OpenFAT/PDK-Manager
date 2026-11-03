@@ -31,8 +31,9 @@ use crate::install::{ARCHIVE_BYTES_MAX, HASH_CHUNK, Sha256, Step, derive_cmg, in
 use crate::remote::{self, REMOTES, Remote, TRUSTED};
 use crate::{
     Fv, INDEX, Job, MODEL_DIALECTS, Model, RECIPES, Source, export_argv, forget_manifest,
-    local_refusal, parse_index, parse_versions, pinned_version, prune_plan, recipe, references,
-    remote_manifest, remove_refusal, tail, use_manifest, valid_version, version_dir, write_index,
+    local_refusal, models_export_argv, parse_index, parse_versions, pinned_version, prune_plan,
+    recipe, references, remote_manifest, remove_refusal, tail, use_manifest, valid_version,
+    version_dir, write_index,
 };
 
 guest::export!(on_event);
@@ -61,6 +62,9 @@ enum Io {
     Remove(Fv),
     RemoveIndex,
     Export(Fv),
+    /// A model export's `ROOT` read, then its `pdk-models` run.
+    ExportRoot(Fv, &'static str),
+    ExportModels(Fv, &'static str),
     Remotes,
     Trusted,
     /// A write of `pdks.remote` or of the trusted list.
@@ -538,9 +542,6 @@ fn step_done(s: &mut State, host: &Host, out: &mut Out, i: usize, status: i32, b
     let gone = Code::Gone.neg();
     let failure = match &s.steps[i] {
         Step::Remove(_) => (status < 0 && status != gone).then(|| "cannot remove".to_owned()),
-        // pdk-models exits 1 for a store written with losses: its `lost`/`missing` lines
-        // stay in the step's output; the kit itself is still what simulations read.
-        Step::Spawn(_, a) if a[1] == "pdk-models" && status == 1 => None,
         Step::Spawn(_, a) => (status != 0).then(|| format!("{} exit {status}", a[0])),
         Step::Verify(path, _) if status < 0 || bytes.len() > ARCHIVE_BYTES_MAX => {
             Some(format!("cannot read {path}"))
@@ -821,6 +822,42 @@ fn done(s: &mut State, host: &Host, out: &mut Out, io: Io, status: i32, bytes: &
             } else {
                 let msg = format!("pdk.export {} {}: exit {status} {last}", fv.0, fv.1);
                 say(s, out, Level::Error, msg.trim_end());
+            }
+        }
+        Io::ExportRoot(fv, to) => {
+            let dir = version_dir(&fv.0, &fv.1);
+            let root = match String::from_utf8_lossy(bytes).lines().next() {
+                Some(p) if ok && !p.trim().is_empty() => p.trim().to_owned(),
+                _ => format!("{dir}/root"),
+            };
+            let a = models_export_argv(recipe(&fv.0).expect("checked"), &fv.1, &root, to);
+            let msg = format!("pdk: exporting {} {} models to {to}…", fv.0, fv.1);
+            say(s, out, Level::Info, &msg);
+            issue(s, out, host.spawn(&argv(&a), b""), Io::ExportModels(fv, to));
+        }
+        Io::ExportModels(fv, to) => {
+            let dir = format!("{}/export/{to}", version_dir(&fv.0, &fv.1));
+            let lines = tail(bytes);
+            // pdk-models: 0 lossless, 1 written with losses (its `lost`/`missing` lines).
+            match status {
+                0 => {
+                    let msg = format!("pdk: exported {} {} models into {dir}", fv.0, fv.1);
+                    say(s, out, Level::Info, &msg);
+                }
+                1 => {
+                    let msg = format!(
+                        "pdk: exported {} {} models into {dir}, with losses: {}",
+                        fv.0,
+                        fv.1,
+                        lines.join("; ")
+                    );
+                    say(s, out, Level::Warn, &msg);
+                }
+                _ => {
+                    let last = lines.last().cloned().unwrap_or_default();
+                    let msg = format!("pdk.export {} {}: exit {status} {last}", fv.0, fv.1);
+                    say(s, out, Level::Error, msg.trim_end());
+                }
             }
         }
         Io::RemoteConfig if !ok => say(s, out, Level::Error, "pdk.remote: cannot write"),
@@ -1159,6 +1196,11 @@ fn refreshed(s: &mut State, host: &Host, out: &mut Out) {
                     Level::Error,
                     &format!("pdk.export {f} {v}: refused: {why}"),
                 );
+                return;
+            }
+            if MODEL_DIALECTS.contains(&to) {
+                let path = format!("{}/ROOT", version_dir(f, v));
+                issue(s, out, host.fs_read(&path), Io::ExportRoot(fv, to));
                 return;
             }
             let a = export_argv(recipe(f).expect("checked"), v, to);
