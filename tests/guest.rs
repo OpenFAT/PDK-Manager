@@ -993,6 +993,7 @@ fn real_interop_scans_a_remote_kit() {
         return;
     }
     std::fs::remove_file(w.dir.join(".fakebin/schemify-interop")).unwrap();
+    w.cmd("pdk.panel", "");
     let kit = remote_kit(&w);
     let dest = format!("pdk@pdkhost:{kit}");
     w.cmd(
