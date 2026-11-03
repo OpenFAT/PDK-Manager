@@ -1,23 +1,29 @@
 //! The built guest (`pdk_manager.wasm`, from `build.sh`) through the
 //! real host (`schemify_plugin`: grants and path checks included), with fake `ciel`,
-//! `schemify-interop`, `git`, `curl` and `tar` first on `PATH` (shell scripts that write a tiny tree and
-//! log their argv).
+//! `schemify-interop`, `git`, `curl`, `tar` and `ssh` first on `PATH` (shell scripts that write a
+//! tiny tree and log their argv; the fake `ssh` runs the remote command locally, against a
+//! fixture kit outside the project).
 //! Filesystem and canonical-text oracles: the argv of every step, the store layout, `STATE`,
 //! `tech.map`, the manifest after `pdk.use`, that a failing step leaves no `STATE ok`, that
 //! `pdk.remove` refuses the active and the locked version, and that `pdk.prune` removes exactly
-//! the unreferenced ones. Skips when the module has not been built.
+//! the unreferenced ones; that a remote kit needs trust, that its scan (agent and fallback)
+//! writes only the cells and the manifest rows and that no kit byte reaches the project tree
+//! or the panel, that forget removes them, and that exports refuse it. Skips when the module
+//! has not been built. `real_interop_scans_a_remote_kit` runs the real `schemify-interop` (the
+//! dev shell's) behind the fake `ssh`, and skips when it does not speak `pdk-scan`.
 //!
 //! Ignored, nightly-style, against the network: `real_ciel_installs_sky130` (real `ciel` and
 //! `schemify-interop` on `PATH`) and `real_kits_simulate_an_inverter` (FreePDK45 and ASAP7 installed
 //! for real, then the inverter's DC sweep in ngspice): `cargo test -- --ignored`.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use schemify_plugin::abi::{Code, Event, FUEL_DEFAULT, Kind};
 use schemify_plugin::{IoOp, PluginEvents, PluginId, Plugins, RequestQueues, Snapshots, deliver};
 
-const GRANTS: [&str; 7] = [
+const GRANTS: [&str; 8] = [
     "read_project",
     "write_project",
     "spawn:ciel",
@@ -25,6 +31,7 @@ const GRANTS: [&str; 7] = [
     "spawn:git",
     "spawn:curl",
     "spawn:tar",
+    "spawn:ssh",
 ];
 
 /// The fake `ciel`: logs its argv; `ls-remote` prints two versions; `enable` builds
@@ -52,12 +59,57 @@ exit 64
 /// fails when the output directory names `$FAIL_IMPORT`.
 const FAKE_INTEROP: &str = r#"#!/bin/sh
 echo "schemify-interop $*" >> "$FAKE_LOG"
+case "$1" in
+xschem-export|virtuoso-export) echo "exported"; exit 0 ;;
+pdk-scan) exec sh "$(dirname "$0")/pdk-scan" "$@" ;;
+esac
 out="$4"
 case "$out" in *"/$FAIL_IMPORT/"*) echo "import: no symbols found" >&2; exit 2 ;; esac
 mkdir -p "$out/sky130_fd_pr"
 printf 'schemify 1 project\n\nlib sky130_fd_pr path sky130_fd_pr\n\nset SKYWATER_MODELS ${PDK_ROOT}/${PDK}/libs.tech/combined\n' > "$out/schemify.project"
 printf 'schemify 1 shprim\n' > "$out/sky130_fd_pr/nfet_01v8.shprim"
 echo "imported 1 cell"
+"#;
+
+/// The fake `pdk-scan` (protocol 1): the agent scan prints two cells (or the scan's error when
+/// the entry is missing); `--remote-script` prints a framing script; `--stdin` needs the
+/// entry's `inc.spice` until its frames hold it, then prints the cells. Never echoes its input.
+const FAKE_PDK_SCAN: &str = r#"#!/bin/sh
+cells() { printf 'pdkscan 1\nversion 0123456789abcdef\nfile nch.shprim 18\nschemify 1 shprim\nfile pch.shprim 18\nschemify 1 shprim\nissue bins skipped\nend\n'; }
+shift
+case "$1" in
+--protocol) echo "pdkscan 1"; exit 0 ;;
+--remote-script) cat <<'EOS'
+printf 'sfyframe 1\n'
+for p in "$@"; do
+  if [ -f "$p" ]; then printf 'f %s %s\n' "$(wc -c < "$p" | tr -d ' ')" "$p"; cat "$p"
+  else printf 'f 0 ! %s\n' "$p"; fi
+done
+printf 'end\n'
+EOS
+  exit 0 ;;
+--root) [ -f "$2/$4" ] || { printf 'pdkscan 1\nerror "cannot read %s"\nend\n' "$4"; exit 1; }
+  cells; exit 0 ;;
+--stdin) entry="$5"; inc="$(dirname "$entry")/inc.spice"; input="$(cat)"
+  case "$input" in
+  *"$inc"*) cells ;;
+  *) printf 'pdkscan 1\nversion 0123456789abcdef\nneed %s\nend\n' "$inc" ;;
+  esac
+  exit 0 ;;
+esac
+exit 64
+"#;
+
+/// The fake `ssh`: logs its argv and runs the remote command (the words after the
+/// destination) locally with `sh -c`, as sshd's login shell would; host `down` refuses the
+/// connection, and with `$NO_AGENT` set the remote side has no `schemify-interop`.
+const FAKE_SSH: &str = r#"#!/bin/sh
+echo "ssh $*" >> "$FAKE_LOG"
+while [ "$1" != "--" ]; do shift; done
+shift; host="$1"; shift
+case "$host" in *down) echo "ssh: connect to host down port 22: Connection refused" >&2; exit 255 ;; esac
+case "$1" in schemify-interop) if [ -n "$NO_AGENT" ]; then echo "sh: schemify-interop: not found" >&2; exit 127; fi ;; esac
+exec sh -c "$*"
 "#;
 
 /// The fake `git`: logs its argv; `clone` of the ASAP7 kit writes three level-72 corner cards,
@@ -120,6 +172,8 @@ impl World {
             ("git", FAKE_GIT),
             ("curl", FAKE_CURL),
             ("tar", FAKE_TAR),
+            ("ssh", FAKE_SSH),
+            ("pdk-scan", FAKE_PDK_SCAN),
         ] {
             std::fs::write(bin.join(name), body).unwrap();
             let ok = Command::new("chmod")
@@ -222,11 +276,21 @@ impl World {
                 c.args(&args[1..])
                     .current_dir(&self.dir)
                     .env("PATH", &self.path)
-                    .env("FAKE_LOG", &self.log);
+                    .env("FAKE_LOG", &self.log)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
                 for (k, v) in &self.env {
                     c.env(k, v);
                 }
-                let o = c.output().expect("spawns");
+                let mut child = c.spawn().expect("spawns");
+                let mut stdin = child.stdin.take().expect("piped");
+                let data = data.to_vec();
+                let feed = std::thread::spawn(move || {
+                    let _ = stdin.write_all(&data);
+                });
+                let o = child.wait_with_output().expect("runs");
+                feed.join().expect("fed");
                 let mut bytes = o.stdout;
                 bytes.extend_from_slice(&o.stderr);
                 (o.status.code().unwrap_or(-1), bytes)
@@ -637,6 +701,326 @@ fn git_url_and_local_kits() {
     assert!(w.dir.join(&d).exists(), "the active install stays");
     let _ = std::fs::remove_dir_all(&ext);
     assert!(w.faults().is_empty(), "{:?}", w.faults());
+}
+
+const SSH: &str = "ssh -T -x -a -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ForwardAgent=no -o ClearAllForwardings=yes -o PermitLocalCommand=no -o StrictHostKeyChecking=yes --";
+
+/// A fixture kit outside the project (`<project>.kit`, an absolute path the grammar accepts):
+/// `models/top.lib` includes `inc.spice`; both hold the marker `SECRET`, which must never
+/// reach the project tree or the panel.
+fn remote_kit(w: &World) -> String {
+    let kit = w.dir.with_extension("kit");
+    let _ = std::fs::remove_dir_all(&kit);
+    std::fs::create_dir_all(kit.join("models")).unwrap();
+    std::fs::write(
+        kit.join("models/top.lib"),
+        "* SECRET corner library\n.lib tt\n.include inc.spice\n.endl tt\n",
+    )
+    .unwrap();
+    std::fs::write(
+        kit.join("models/inc.spice"),
+        ".subckt nch d g s b w=1u l=1u\n.model nmos_SECRET nmos level=54 vth0=0.42\n.ends nch\n",
+    )
+    .unwrap();
+    let kit = kit.display().to_string();
+    let ok = kit.strip_prefix('/').unwrap().split('/').all(|s| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+    });
+    assert!(ok, "the temp dir {kit} is not a grammar path");
+    kit
+}
+
+/// Whether `needle` occurs in any file under `dir`.
+fn tree_contains(dir: &Path, needle: &[u8]) -> bool {
+    std::fs::read_dir(dir).unwrap().flatten().any(|e| {
+        let p = e.path();
+        if p.is_dir() {
+            tree_contains(&p, needle)
+        } else {
+            std::fs::read(&p).is_ok_and(|b| b.windows(needle.len()).any(|x| x == needle))
+        }
+    })
+}
+
+#[test]
+fn remote_kits_need_trust_and_never_leave_the_host() {
+    let Some(mut w) = World::new("remote") else {
+        return;
+    };
+    let kit = remote_kit(&w);
+    let dest = format!("pdk@pdkhost:{kit}");
+    w.cmd("pdk.panel", "");
+    // Refused records write nothing.
+    for args in [
+        format!("sky130 {dest} models/top.lib spice"),
+        format!("tsmc28 -oProxyCommand=x:{kit} models/top.lib spice"),
+        format!("tsmc28 {dest} ../top.lib spice"),
+        format!("tsmc28 {dest} models/top.lib eldo"),
+        format!("tsmc28 \"pdk@pdkhost:{kit};id\" models/top.lib spice"),
+    ] {
+        w.cmd("pdk.remote.add", &args);
+        assert!(w.read("pdks.remote").is_none(), "{args}");
+    }
+    w.cmd(
+        "pdk.remote.add",
+        &format!("tsmc28 {dest} models/top.lib spice"),
+    );
+    assert_eq!(
+        w.read("pdks.remote").unwrap().lines().nth(1).unwrap(),
+        format!("remote tsmc28 {dest} models models/top.lib dialect spice")
+    );
+    // Untrusted: no ssh, the panel names the exact destination with a Trust button.
+    w.cmd("pdk.remote.refresh", "tsmc28");
+    assert!(w.take_log().is_empty(), "nothing spawned");
+    let ui = w.ui();
+    assert!(ui.contains(&format!("label {dest}\n")), "{ui}");
+    assert!(
+        ui.contains("command pdk.remote.row.trust.0\n  tooltip"),
+        "{ui}"
+    );
+    assert!(ui.contains("is not trusted in this checkout"), "{ui}");
+    w.cmd("pdk.remote.row.trust.0", "");
+    assert_eq!(
+        w.read(".schemify/pdk-manager/trusted").unwrap(),
+        format!("{dest}\n")
+    );
+
+    // Agent mode: the probe, then the scan; the cache and the manifest rows.
+    w.cmd("pdk.remote.refresh", "tsmc28");
+    assert_eq!(
+        w.take_log(),
+        [
+            format!("{SSH} pdk@pdkhost schemify-interop pdk-scan --protocol"),
+            "schemify-interop pdk-scan --protocol".to_owned(),
+            format!(
+                "{SSH} pdk@pdkhost schemify-interop pdk-scan --root '{kit}' --entry 'models/top.lib' --dialect 'spice' --lib 'tsmc28'"
+            ),
+            format!(
+                "schemify-interop pdk-scan --root {kit} --entry models/top.lib --dialect spice --lib tsmc28"
+            ),
+        ]
+    );
+    let cache = ".schemify/pdk-manager/remote/tsmc28";
+    assert_eq!(
+        w.read(&format!("{cache}/nch.shprim")).as_deref(),
+        Some("schemify 1 shprim\n")
+    );
+    assert!(w.read(&format!("{cache}/pch.shprim")).is_some());
+    let manifest = format!(
+        "schemify 1 project\n\nlib mine path lib\nlib tsmc28 path {cache}\n\nset PDK_MODELS {kit}/models/top.lib\n"
+    );
+    assert_eq!(w.read("schemify.project").unwrap(), manifest);
+    assert!(
+        w.ui()
+            .contains("label \"tsmc28: 2 cells from pdk@pdkhost (agent), 1 issues\""),
+        "{}",
+        w.ui()
+    );
+
+    // Fallback: no agent on the host. The script from the local interop, framed reads of the
+    // entry and of what the scan needs, the local `--stdin` scan; the cache is rewritten.
+    std::fs::write(w.dir.join(format!("{cache}/stale.shprim")), "old").unwrap();
+    w.env = vec![("NO_AGENT", "1".into())];
+    w.cmd("pdk.remote.refresh", "tsmc28");
+    let stdin_scan = format!(
+        "schemify-interop pdk-scan --stdin --dialect spice --entry {kit}/models/top.lib --lib tsmc28"
+    );
+    assert_eq!(
+        w.take_log(),
+        [
+            format!("{SSH} pdk@pdkhost schemify-interop pdk-scan --protocol"),
+            "schemify-interop pdk-scan --remote-script".to_owned(),
+            format!("{SSH} pdk@pdkhost sh -s -- '{kit}/models/top.lib'"),
+            stdin_scan.clone(),
+            format!("{SSH} pdk@pdkhost sh -s -- '{kit}/models/inc.spice'"),
+            stdin_scan,
+        ]
+    );
+    assert!(
+        w.read(&format!("{cache}/stale.shprim")).is_none(),
+        "rewritten"
+    );
+    assert!(w.read(&format!("{cache}/nch.shprim")).is_some());
+    assert_eq!(w.read("schemify.project").unwrap(), manifest);
+    assert!(w.ui().contains("from pdk@pdkhost (fallback)"), "{}", w.ui());
+    assert!(
+        !tree_contains(&w.dir, b"SECRET"),
+        "kit bytes reached the project"
+    );
+    assert!(!w.ui().contains("SECRET"));
+    w.env.clear();
+
+    // Exports refuse a remote family.
+    w.cmd("pdk.export", "tsmc28 v1 xschem");
+    assert!(w.take_log().is_empty());
+    assert!(
+        w.ui().contains("a remote family is never exported"),
+        "{}",
+        w.ui()
+    );
+
+    // A changed destination needs trust again.
+    w.cmd(
+        "pdk.remote.add",
+        &format!("tsmc28 pdk@otherhost:{kit} models/top.lib spice"),
+    );
+    w.cmd("pdk.remote.refresh", "tsmc28");
+    assert!(
+        w.take_log().is_empty(),
+        "the new destination is not trusted"
+    );
+    assert!(
+        w.ui()
+            .contains(&format!("pdk@otherhost:{kit} is not trusted")),
+        "{}",
+        w.ui()
+    );
+
+    // Forget: the cache and the manifest rows go; the record and the trust stay.
+    let reloads = w.reloads;
+    w.cmd("pdk.remote.forget", "tsmc28");
+    assert!(!w.dir.join(cache).exists());
+    assert_eq!(
+        w.read("schemify.project").unwrap(),
+        "schemify 1 project\n\nlib mine path lib\n"
+    );
+    assert_eq!(w.reloads, reloads + 1);
+    assert!(w.read("pdks.remote").unwrap().contains("tsmc28"));
+
+    // ssh's own failure: its message, no fallback.
+    w.cmd(
+        "pdk.remote.add",
+        &format!("lab pdk@down:{kit} models/top.lib spice"),
+    );
+    w.cmd("pdk.remote.trust", "lab");
+    w.cmd("pdk.remote.refresh", "lab");
+    assert_eq!(w.take_log().len(), 1, "the probe only");
+    assert!(
+        w.ui().contains(
+            "lab: ssh to pdk@down failed: ssh: connect to host down port 22: Connection refused"
+        ),
+        "{}",
+        w.ui()
+    );
+    // The scan's own error is the outcome.
+    w.cmd(
+        "pdk.remote.add",
+        &format!("lab pdk@pdkhost:{kit} models/missing.lib spice"),
+    );
+    w.cmd("pdk.remote.trust", "lab");
+    w.cmd("pdk.remote.refresh", "lab");
+    assert!(
+        w.ui()
+            .contains("lab: pdk-scan: cannot read models/missing.lib"),
+        "{}",
+        w.ui()
+    );
+    assert!(!w.dir.join(".schemify/pdk-manager/remote/lab").exists());
+    let _ = std::fs::remove_dir_all(&kit);
+    assert!(w.faults().is_empty(), "{:?}", w.faults());
+}
+
+#[test]
+fn exports_spawn_interop_on_local_installs() {
+    let Some(mut w) = World::new("export") else {
+        return;
+    };
+    let ext = w.dir.with_extension("fp45");
+    std::fs::create_dir_all(ext.join("FreePDK45")).unwrap();
+    w.cmd("pdk.panel", "");
+    w.cmd("pdk.export", "freepdk45 ncsu xschem");
+    assert!(w.take_log().is_empty(), "not installed: refused");
+    w.cmd("pdk.install", &format!("freepdk45 ncsu {}", ext.display()));
+    w.cmd("pdk.export", "freepdk45 ncsu xschem");
+    let d = ".schemify/pdks/freepdk45/ncsu";
+    let cells = "freepdk45/nmos_vtl.shprim freepdk45/pmos_vtl.shprim freepdk45/nmos_vtg.shprim freepdk45/pmos_vtg.shprim freepdk45/nmos_vth.shprim freepdk45/pmos_vth.shprim freepdk45/nmos_thkox.shprim freepdk45/pmos_thkox.shprim";
+    assert_eq!(
+        w.take_log(),
+        [format!(
+            "schemify-interop xschem-export {d}/lib {cells} -o ../export/xschem"
+        )]
+    );
+    assert!(
+        w.ui()
+            .contains(&format!("exported freepdk45 ncsu into {d}/export")),
+        "{}",
+        w.ui()
+    );
+    w.cmd("pdk.row.virtuoso.0", "");
+    assert_eq!(
+        w.take_log(),
+        [format!(
+            "schemify-interop virtuoso-export {d}/lib {cells} -o ../export/freepdk45.sfyx"
+        )]
+    );
+    // An imported family's cells cannot be listed: refused, nothing spawned.
+    w.cmd("pdk.install", &format!("sky130 {V1}"));
+    w.take_log();
+    w.cmd("pdk.export", &format!("sky130 {V1} virtuoso"));
+    assert!(w.take_log().is_empty());
+    assert!(
+        w.ui().contains("imported cells cannot be listed"),
+        "{}",
+        w.ui()
+    );
+    for bad in ["freepdk45 ncsu spectre", "freepdk45 ncsu", "nope v xschem"] {
+        w.cmd("pdk.export", bad);
+        assert!(w.take_log().is_empty(), "{bad}");
+    }
+    let _ = std::fs::remove_dir_all(&ext);
+    assert!(w.faults().is_empty(), "{:?}", w.faults());
+}
+
+/// The real `schemify-interop` (the dev shell's, from the `interop` flake input) behind the
+/// fake `ssh`: agent mode, then the fallback with its real remote script. Skips when that
+/// interop does not speak `pdk-scan` protocol 1 yet.
+#[test]
+fn real_interop_scans_a_remote_kit() {
+    let Some(mut w) = World::new("real-remote") else {
+        return;
+    };
+    let real = Command::new("schemify-interop")
+        .args(["pdk-scan", "--protocol"])
+        .output();
+    if !real.is_ok_and(|o| {
+        String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .any(|l| l == "pdkscan 1")
+    }) {
+        eprintln!("schemify-interop on PATH does not speak pdk-scan 1; skipped");
+        return;
+    }
+    std::fs::remove_file(w.dir.join(".fakebin/schemify-interop")).unwrap();
+    let kit = remote_kit(&w);
+    let dest = format!("pdk@pdkhost:{kit}");
+    w.cmd(
+        "pdk.remote.add",
+        &format!("tsmc28 {dest} models/top.lib spice tt"),
+    );
+    w.cmd("pdk.remote.trust", "tsmc28");
+    for (mode, env) in [("agent", ""), ("fallback", "1")] {
+        w.env = vec![("NO_AGENT", env.into())];
+        w.cmd("pdk.remote.refresh", "tsmc28");
+        let ui = w.ui();
+        assert!(
+            ui.contains(&format!("from pdk@pdkhost ({mode})")),
+            "{mode}: {ui}"
+        );
+        let cache = w.dir.join(".schemify/pdk-manager/remote/tsmc28");
+        assert!(std::fs::read_dir(&cache).unwrap().count() > 0);
+        assert!(
+            w.read("schemify.project")
+                .unwrap()
+                .contains(&format!("set PDK_MODELS {kit}/models/top.lib\n"))
+        );
+        assert!(
+            !tree_contains(&w.dir.join(".schemify"), b"vth0"),
+            "model data reached the cache"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&kit);
 }
 
 /// Nightly-style: the real `ciel` (network) and `schemify-interop` on `PATH` install the newest sky130

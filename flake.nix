@@ -9,10 +9,22 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # The Interop plugin's CLI (`schemify-interop`), which the plugin spawns (xschem import,
+    # exports, pdk-scan): in the dev shell, so the guest tests can run the real one.
+    interop = {
+      url = "github:OpenFAT/Interoperate";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.rust-overlay.follows = "rust-overlay";
+    };
   };
 
   outputs =
-    { nixpkgs, rust-overlay, ... }:
+    {
+      nixpkgs,
+      rust-overlay,
+      interop,
+      ...
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -35,11 +47,13 @@
     {
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          # Rust 1.95.0 (the rust-version) with the wasm32 std and rust-lld.
+          # Rust 1.95.0 (the rust-version) with the wasm32 std and rust-lld, and the real
+          # `schemify-interop` (tests/guest.rs puts its fakes ahead of it on PATH).
           packages = [
             (pkgs.rust-bin.stable."1.95.0".default.override {
               targets = [ "wasm32-unknown-unknown" ];
             })
+            interop.packages.${pkgs.stdenv.hostPlatform.system}.default
           ];
         };
       });

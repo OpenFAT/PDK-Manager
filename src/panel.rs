@@ -4,8 +4,10 @@
 //! Styled with the default UI's cell-panel styles (`cell-pane`, `docs-bar`, `docs-title`,
 //! `cell-page`, `cell-section`, `cell-block`, `cell-row`, `cell-key`), so it follows the
 //! active theme and the Modern preset without styles of its own. Row buttons run row
-//! commands (`pdk.row.use.<i>`, `pdk.row.remove.<i>`, `pdk.remote.install.<k>`,
-//! `pdk.family.<family>`), because a clicked button sends its command without arguments.
+//! commands (`pdk.row.use.<i>`, `pdk.row.remove.<i>`, `pdk.row.xschem.<i>`,
+//! `pdk.row.virtuoso.<i>`, `pdk.remote.install.<k>`, `pdk.family.<family>`,
+//! `pdk.remote.row.trust|refresh|forget.<i>`), because a clicked button sends its command
+//! without arguments.
 
 use std::fmt::Write as _;
 
@@ -33,6 +35,23 @@ pub fn commands(m: &Model) -> String {
             "PDKs: remove unreferenced versions (then pdk.prune confirm)",
         ),
         ("pdk.prune.confirm", "PDKs: confirm the prune"),
+        (
+            "pdk.export",
+            "PDKs: export <family> <version> xschem|virtuoso (local installs)",
+        ),
+        (
+            "pdk.remote.add",
+            "PDKs: add a remote PDK <family> <user@host:/path> <models> <dialect> [section]",
+        ),
+        ("pdk.remote.trust", "PDKs: trust a remote PDK's destination"),
+        (
+            "pdk.remote.refresh",
+            "PDKs: scan a remote PDK over ssh into the local interface cache",
+        ),
+        (
+            "pdk.remote.forget",
+            "PDKs: delete a remote PDK's cache and manifest rows",
+        ),
     ] {
         command(&mut t, name, label);
     }
@@ -50,6 +69,25 @@ pub fn commands(m: &Model) -> String {
             &format!("pdk.row.remove.{i}"),
             "PDKs: remove this version",
         );
+        command(
+            &mut t,
+            &format!("pdk.row.xschem.{i}"),
+            "PDKs: export this version to xschem",
+        );
+        command(
+            &mut t,
+            &format!("pdk.row.virtuoso.{i}"),
+            "PDKs: export this version to Virtuoso",
+        );
+    }
+    for i in 0..m.remotes.len() {
+        for (what, label) in [
+            ("trust", "PDKs: trust this remote destination"),
+            ("refresh", "PDKs: scan this remote PDK"),
+            ("forget", "PDKs: forget this remote PDK's cache"),
+        ] {
+            command(&mut t, &format!("pdk.remote.row.{what}.{i}"), label);
+        }
     }
     for k in 0..m.remote.len() {
         command(
@@ -269,6 +307,26 @@ pub fn ui(m: &Model) -> String {
             rm_why,
             "Delete this version from .schemify/pdks",
         );
+        let ex_why = if crate::recipe(&fv.0)
+            .is_some_and(|r| crate::export_argv(r, &fv.1, "xschem").is_none())
+        {
+            Some("imported cells cannot be listed (the plugin ABI has no directory listing)")
+        } else if m.complete.get(i).copied().flatten() != Some(true) {
+            Some("not installed (STATE is not ok)")
+        } else {
+            None
+        };
+        for (to, label) in [("xschem", "→ xschem"), ("virtuoso", "→ Virtuoso")] {
+            button(
+                &mut t,
+                &format!("{row}.{to}"),
+                &row,
+                label,
+                &format!("pdk.row.{to}.{i}"),
+                ex_why,
+                "Export this version's cells (schemify-interop) into its export/ directory",
+            );
+        }
     }
     // Available.
     node(
@@ -340,6 +398,7 @@ pub fn ui(m: &Model) -> String {
             help,
         );
     }
+    remote_section(&mut t, m);
     // Progress.
     if let Some(j) = &m.job {
         node(
@@ -441,6 +500,91 @@ pub fn ui(m: &Model) -> String {
     t
 }
 
+/// The "Remote" section: each `pdks.remote` record with its exact destination, its trust,
+/// and Trust / Refresh / Forget; then the last remote outcome.
+fn remote_section(t: &mut String, m: &Model) {
+    node(
+        t,
+        "pdk.ssh",
+        "label",
+        "pdk.page",
+        &[("label", "Remote"), ("style", "cell-section")],
+    );
+    if m.remotes.is_empty() {
+        node(
+            t,
+            "pdk.ssh.none",
+            "label",
+            "pdk.page",
+            &[
+                (
+                    "label",
+                    "No remote PDK: pdk.remote.add <family> <user@host:/path> <models> <dialect>",
+                ),
+                ("style", "cell-key"),
+            ],
+        );
+    }
+    for (i, r) in m.remotes.iter().enumerate() {
+        let row = format!("pdk.ssh.{i}");
+        node(t, &row, "panel", "pdk.page", &[("style", "cell-row")]);
+        node(
+            t,
+            &format!("{row}.name"),
+            "label",
+            &row,
+            &[("label", &r.family), ("style", "cell-key")],
+        );
+        node(
+            t,
+            &format!("{row}.dest"),
+            "label",
+            &row,
+            &[("label", &r.dest)],
+        );
+        let trusted = m.trusted.contains(&r.dest);
+        let scanning = m.scanning.is_some().then_some("a scan is running");
+        button(
+            t,
+            &format!("{row}.trust"),
+            &row,
+            "Trust",
+            &format!("pdk.remote.row.trust.{i}"),
+            trusted.then_some("trusted in this checkout"),
+            "Trust exactly this user@host:/path (stored in .schemify/, never committed)",
+        );
+        button(
+            t,
+            &format!("{row}.refresh"),
+            &row,
+            "Refresh",
+            &format!("pdk.remote.row.refresh.{i}"),
+            (!trusted)
+                .then_some("trust the destination first")
+                .or(scanning),
+            "Scan the kit over ssh: pins, parameter names, formats; no model data",
+        );
+        button(
+            t,
+            &format!("{row}.forget"),
+            &row,
+            "Forget",
+            &format!("pdk.remote.row.forget.{i}"),
+            scanning,
+            "Delete the local interface cache and the manifest rows",
+        );
+    }
+    if !m.remote_outcome.is_empty() {
+        node(
+            t,
+            "pdk.ssh.outcome",
+            "label",
+            "pdk.page",
+            &[("label", &m.remote_outcome), ("style", "cell-key")],
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +607,16 @@ mod tests {
             job: None,
             prune: None,
             message: String::new(),
+            remotes: vec![crate::remote::Remote {
+                family: "tsmc28".into(),
+                dest: "pdk@pdkhost:/proj/pdk/tsmc28".into(),
+                models: "m.scs".into(),
+                dialect: "spectre".into(),
+                section: None,
+            }],
+            trusted: Vec::new(),
+            scanning: None,
+            remote_outcome: "tsmc28: 3 cells from pdk@pdkhost (agent)".into(),
         }
     }
 
@@ -505,5 +659,33 @@ mod tests {
         assert!(t.contains("command pdk.remote.install.1\n  disabled 1\n"));
         m.prune = Some(vec![("sky130".into(), "bbbbbbbbbb".into())]);
         assert!(ui(&m).contains("Removes 1: sky130 bbbbbbb"));
+    }
+
+    #[test]
+    fn remote_rows_show_the_exact_destination_and_need_trust() {
+        let mut m = model();
+        let t = ui(&m);
+        schemify_format::parse(format!("schemify 1 journal\n{t}").as_bytes()).expect("lexes");
+        assert!(t.contains(
+            "node pdk.ssh.0.dest label\n  parent pdk.ssh.0\n  label pdk@pdkhost:/proj/pdk/tsmc28\n"
+        ));
+        assert!(t.contains("command pdk.remote.row.refresh.0\n  disabled 1\n  tooltip \"trust the destination first\"\n"));
+        assert!(t.contains("label Trust\n  command pdk.remote.row.trust.0\n  tooltip"));
+        assert!(t.contains("label \"tsmc28: 3 cells from pdk@pdkhost (agent)\""));
+        m.trusted = vec!["pdk@pdkhost:/proj/pdk/tsmc28".into()];
+        let t = ui(&m);
+        assert!(t.contains("command pdk.remote.row.trust.0\n  disabled 1\n"));
+        assert!(t.contains("label Refresh\n  command pdk.remote.row.refresh.0\n  tooltip"));
+        // Imported families cannot be exported; installed generated ones can.
+        assert!(t.contains("command pdk.row.xschem.0\n  disabled 1\n  tooltip \"imported cells"));
+        m.installs[2] = ("freepdk45".into(), "x".into());
+        let t = ui(&m);
+        assert!(t.contains("label \"→ Virtuoso\"\n  command pdk.row.virtuoso.2\n  tooltip"));
+        let c = commands(&m);
+        assert!(
+            c.contains("command pdk.remote.row.forget.0 ") && c.contains("command pdk.export ")
+        );
+        m.remotes.clear();
+        assert!(ui(&m).contains("No remote PDK"));
     }
 }

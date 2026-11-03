@@ -9,6 +9,8 @@
 //!   which versions are active or locked, and the prune plan;
 //! - [`install`] — an install as a list of [`install::Step`]s (§3), and the files it generates:
 //!   device cells, the corner library, OSDI model cards (§2.2, §7);
+//! - [`remote`] — remote PDKs over SSH (docs/remote-pdks.md): `pdks.remote`, trust, the ssh
+//!   argv, the `pdk-scan` reader;
 //! - [`panel`] — the docked "PDKs" panel (§4) as UI records over a [`Model`];
 //! - on wasm32, the guest glue: commands → I/O chains (`fs_read`, `fs_write`, `fs_remove`,
 //!   `spawn`) → model → panel.
@@ -21,6 +23,7 @@
 
 pub mod install;
 pub mod panel;
+pub mod remote;
 
 use schemify_abi::text;
 
@@ -427,6 +430,34 @@ pub fn import_argv(r: &Recipe, version: &str, root: &str) -> Vec<String> {
     argv
 }
 
+/// `schemify-interop xschem-export|virtuoso-export <dir>/lib <lib>/<cell>.shprim… -o
+/// ../export/xschem|../export/<family>.sfyx` (`to` is `xschem` or `virtuoso`): the install's
+/// library directory is the project (its `schemify.project` names the library; the paths
+/// after it are relative to it), every generated cell a top. `None` for an imported family:
+/// the plugin cannot list a directory, so it does not know the imported cells.
+pub fn export_argv(r: &Recipe, version: &str, to: &str) -> Option<Vec<String>> {
+    let (Devices::Mos { cells, .. } | Devices::FinOsdi { cells, .. }) = r.devices else {
+        return None;
+    };
+    let (cmd, o) = match to {
+        "xschem" => ("xschem-export", "../export/xschem".to_owned()),
+        "virtuoso" => ("virtuoso-export", format!("../export/{}.sfyx", r.family)),
+        _ => panic!("export to xschem or virtuoso, not {to}"),
+    };
+    let mut argv = vec![
+        "schemify-interop".to_owned(),
+        cmd.to_owned(),
+        format!("{}/lib", version_dir(r.family, version)),
+    ];
+    argv.extend(
+        cells
+            .iter()
+            .map(|d| format!("{}/{}.shprim", r.family, d.cell)),
+    );
+    argv.extend(["-o".to_owned(), o]);
+    Some(argv)
+}
+
 /// Version ids in `ciel ls-remote` output: every 40-digit hex word, first occurrence order.
 pub fn parse_versions(out: &str) -> Vec<String> {
     let mut v: Vec<String> = Vec::new();
@@ -677,19 +708,7 @@ pub fn use_manifest(
         .map_err(|e| format!("schemify.project: {e}"))?;
     let (_, imp) = blocks(&utf8(import, "import manifest")?, "project")
         .map_err(|e| format!("{dir}/lib/schemify.project: {e}"))?;
-    fn field(b: &Block, i: usize) -> &str {
-        b.fields.get(i).map_or("", String::as_str)
-    }
-    let ours = |b: &Block| match b.word.as_str() {
-        "lib" => field(b, 0) == "tech" || field(b, 2).starts_with(".schemify/pdks/"),
-        "set" => {
-            matches!(field(b, 0), "PDK_ROOT" | "PDK" | "PDK_MODELS")
-                || field(b, 1).contains("PDK_ROOT")
-                || field(b, 1).contains(".schemify/pdks/")
-        }
-        _ => false,
-    };
-    let mut out: Vec<Block> = old.iter().filter(|b| !ours(b)).cloned().collect();
+    let mut out: Vec<Block> = old.iter().filter(|b| !pdk_owned(b)).cloned().collect();
     let kept = out.len();
     for b in imp
         .iter()
@@ -720,6 +739,76 @@ pub fn use_manifest(
     Ok(write_blocks(&header, &out))
 }
 
+fn field(b: &Block, i: usize) -> &str {
+    b.fields.get(i).map_or("", String::as_str)
+}
+
+/// The records `pdk.use` (and a remote refresh) own: every `lib` in the store or the remote
+/// cache, `lib tech`, `set PDK_ROOT|PDK|PDK_MODELS`, and every `set` naming `PDK_ROOT` or the
+/// store.
+fn pdk_owned(b: &Block) -> bool {
+    match b.word.as_str() {
+        "lib" => {
+            field(b, 0) == "tech"
+                || field(b, 2).starts_with(".schemify/pdks/")
+                || field(b, 2).starts_with(remote::CACHE)
+        }
+        "set" => {
+            matches!(field(b, 0), "PDK_ROOT" | "PDK" | "PDK_MODELS")
+                || field(b, 1).contains("PDK_ROOT")
+                || field(b, 1).contains(".schemify/pdks/")
+        }
+        _ => false,
+    }
+}
+
+fn manifest_blocks(manifest: &[u8]) -> Result<(Vec<String>, Vec<Block>), String> {
+    let text = std::str::from_utf8(manifest).map_err(|_| "schemify.project: not UTF-8")?;
+    blocks(text, "project").map_err(|e| format!("schemify.project: {e}"))
+}
+
+/// The manifest after `pdk.remote.refresh` of `family` (temporary, until the core serves
+/// plugin libraries: docs/remote-pdks.md "Implemented"), canonical: the family becomes the
+/// project's PDK as with `pdk.use`. Drops what [`pdk_owned`] names (keeping a `lib tech`
+/// outside `.schemify/`: the user's own map for the remote cells), then appends `lib <family>
+/// path .schemify/pdk-manager/remote/<family>` and `set PDK_MODELS <models>` (the corner
+/// library's absolute path on the PDK host, written verbatim into netlists).
+///
+/// # Errors
+///
+/// A file that does not split into records or is not a manifest, as text.
+pub fn remote_manifest(manifest: &[u8], family: &str, models: &str) -> Result<String, String> {
+    let (header, old) = manifest_blocks(manifest)?;
+    let users_map = |b: &Block| {
+        b.word == "lib" && field(b, 0) == "tech" && !field(b, 2).starts_with(".schemify/")
+    };
+    let mut out: Vec<Block> = old
+        .into_iter()
+        .filter(|b| !pdk_owned(b) || users_map(b))
+        .collect();
+    out.push(record("lib", &[family, "path", &remote::cache_dir(family)]));
+    out.push(record("set", &["PDK_MODELS", models]));
+    Ok(write_blocks(&header, &out))
+}
+
+/// The manifest after `pdk.remote.forget <family>`: without its `lib` row and, when that
+/// row was there, without `set PDK_MODELS`. `None` when the manifest has no such row.
+///
+/// # Errors
+///
+/// A file that does not split into records or is not a manifest, as text.
+pub fn forget_manifest(manifest: &[u8], family: &str) -> Result<Option<String>, String> {
+    let (header, old) = manifest_blocks(manifest)?;
+    let dir = remote::cache_dir(family);
+    let ours = |b: &Block| b.word == "lib" && field(b, 2) == dir;
+    if !old.iter().any(ours) {
+        return Ok(None);
+    }
+    let models = |b: &Block| b.word == "set" && field(b, 0) == "PDK_MODELS";
+    let out: Vec<Block> = old.into_iter().filter(|b| !ours(b) && !models(b)).collect();
+    Ok(Some(write_blocks(&header, &out)))
+}
+
 /// What the panel and the commands know: installs with their state, references, the
 /// remote listing, the running job.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -745,6 +834,14 @@ pub struct Model {
     pub prune: Option<Vec<(String, String)>>,
     /// The last outcome, for the panel's status row.
     pub message: String,
+    /// The `pdks.remote` records.
+    pub remotes: Vec<remote::Remote>,
+    /// The destinations trusted in this checkout.
+    pub trusted: Vec<String>,
+    /// The remote family being scanned, if any.
+    pub scanning: Option<String>,
+    /// The last remote operation's one-line outcome.
+    pub remote_outcome: String,
 }
 
 /// One install in progress (or the last one, when `failed`).
@@ -1025,5 +1122,57 @@ mod tests {
             !back.contains("freepdk45") && !back.contains("FreePDK"),
             "{back}"
         );
+    }
+
+    #[test]
+    fn remote_refresh_and_forget_rewrite_only_their_rows() {
+        let m = "schemify 1 project\n\nlib mine path lib\nlib tech map maps/mine.map\nlib sky130_fd_pr path .schemify/pdks/sky130/v1/lib/sky130_fd_pr\n\nset PDK_ROOT .schemify/pdks/sky130/v1/root\nset MINE 1\n";
+        let text = remote_manifest(m.as_bytes(), "tsmc28", "/proj/pdk/m.scs").unwrap();
+        assert_eq!(
+            text,
+            "schemify 1 project\n\nlib mine path lib\nlib tech map maps/mine.map\n\nset MINE 1\n\nlib tsmc28 path .schemify/pdk-manager/remote/tsmc28\n\nset PDK_MODELS /proj/pdk/m.scs\n"
+        );
+        let d = schemify_format::parse(text.as_bytes()).expect("parses");
+        assert_eq!(schemify_format::write(&d), text);
+        // Idempotent: a second refresh rewrites the same rows.
+        let again = remote_manifest(text.as_bytes(), "tsmc28", "/proj/pdk/m.scs").unwrap();
+        assert_eq!(again, text);
+        // Forget drops the family's lib and PDK_MODELS, nothing else; then has nothing to do.
+        let gone = forget_manifest(text.as_bytes(), "tsmc28").unwrap().unwrap();
+        assert_eq!(
+            gone,
+            "schemify 1 project\n\nlib mine path lib\nlib tech map maps/mine.map\n\nset MINE 1\n"
+        );
+        assert_eq!(forget_manifest(gone.as_bytes(), "tsmc28").unwrap(), None);
+        assert_eq!(forget_manifest(text.as_bytes(), "other").unwrap(), None);
+        assert!(remote_manifest(b"schemify 1 lock\n", "x", "/m").is_err());
+        // Switching back to a local family drops the remote rows.
+        let r = recipe("gf180mcu").unwrap();
+        let back = use_manifest(text.as_bytes(), IMPORT.as_bytes(), r, "v2", ROOT2).unwrap();
+        assert!(
+            !back.contains("tsmc28") && !back.contains("/proj/pdk"),
+            "{back}"
+        );
+    }
+
+    #[test]
+    fn exports_name_every_generated_cell() {
+        let fp = recipe("freepdk45").unwrap();
+        let a = export_argv(fp, "ncsu", "xschem").unwrap();
+        assert_eq!(
+            a[..3],
+            [
+                "schemify-interop",
+                "xschem-export",
+                ".schemify/pdks/freepdk45/ncsu/lib"
+            ]
+        );
+        assert_eq!(a[3], "freepdk45/nmos_vtl.shprim");
+        assert_eq!(a.len(), 3 + 8 + 2);
+        assert_eq!(a[a.len() - 2..], ["-o", "../export/xschem"]);
+        let v = export_argv(recipe("asap7").unwrap(), "v", "virtuoso").unwrap();
+        assert_eq!(v[1], "virtuoso-export");
+        assert_eq!(v[v.len() - 2..], ["-o", "../export/asap7.sfyx"]);
+        assert_eq!(export_argv(recipe("sky130").unwrap(), "v", "xschem"), None);
     }
 }
