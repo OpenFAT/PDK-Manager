@@ -1150,13 +1150,7 @@ fn refreshed(s: &mut State, host: &Host, out: &mut Out) {
                 );
                 return;
             }
-            let Some(a) = export_argv(recipe(f).expect("checked"), v, to) else {
-                let msg = format!(
-                    "pdk.export {f} {v}: refused: imported cells cannot be listed (the plugin ABI has no directory listing)"
-                );
-                say(s, out, Level::Error, &msg);
-                return;
-            };
+            let a = export_argv(recipe(f).expect("checked"), v, to);
             say(
                 s,
                 out,

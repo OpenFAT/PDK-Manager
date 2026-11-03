@@ -307,11 +307,7 @@ pub fn ui(m: &Model) -> String {
             rm_why,
             "Delete this version from .schemify/pdks",
         );
-        let ex_why = if crate::recipe(&fv.0)
-            .is_some_and(|r| crate::export_argv(r, &fv.1, "xschem").is_none())
-        {
-            Some("imported cells cannot be listed (the plugin ABI has no directory listing)")
-        } else if m.complete.get(i).copied().flatten() != Some(true) {
+        let ex_why = if m.complete.get(i).copied().flatten() != Some(true) {
             Some("not installed (STATE is not ok)")
         } else {
             None
@@ -676,8 +672,8 @@ mod tests {
         let t = ui(&m);
         assert!(t.contains("command pdk.remote.row.trust.0\n  disabled 1\n"));
         assert!(t.contains("label Refresh\n  command pdk.remote.row.refresh.0\n  tooltip"));
-        // Imported families cannot be exported; installed generated ones can.
-        assert!(t.contains("command pdk.row.xschem.0\n  disabled 1\n  tooltip \"imported cells"));
+        // Every family exports (Interop lists an imported install's library directory).
+        assert!(!t.contains("imported cells"));
         m.installs[2] = ("freepdk45".into(), "x".into());
         let t = ui(&m);
         assert!(t.contains("label \"→ Virtuoso\"\n  command pdk.row.virtuoso.2\n  tooltip"));

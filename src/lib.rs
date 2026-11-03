@@ -430,32 +430,25 @@ pub fn import_argv(r: &Recipe, version: &str, root: &str) -> Vec<String> {
     argv
 }
 
-/// `schemify-interop xschem-export|virtuoso-export <dir>/lib <lib>/<cell>.shprim… -o
-/// ../export/xschem|../export/<family>.sfyx` (`to` is `xschem` or `virtuoso`): the install's
-/// library directory is the project (its `schemify.project` names the library; the paths
-/// after it are relative to it), every generated cell a top. `None` for an imported family:
-/// the plugin cannot list a directory, so it does not know the imported cells.
-pub fn export_argv(r: &Recipe, version: &str, to: &str) -> Option<Vec<String>> {
-    let (Devices::Mos { cells, .. } | Devices::FinOsdi { cells, .. }) = r.devices else {
-        return None;
-    };
+/// `schemify-interop xschem-export|virtuoso-export <dir>/lib . -o ../export/xschem|
+/// ../export/<family>.sfyx` (`to` is `xschem` or `virtuoso`): the install's library directory
+/// is the project (its `schemify.project` names the library; the paths after it are relative
+/// to it), and `.` names every cell file under it (Interop expands a directory), so imported
+/// families export too: the plugin cannot list their cells itself.
+pub fn export_argv(r: &Recipe, version: &str, to: &str) -> Vec<String> {
     let (cmd, o) = match to {
         "xschem" => ("xschem-export", "../export/xschem".to_owned()),
         "virtuoso" => ("virtuoso-export", format!("../export/{}.sfyx", r.family)),
         _ => panic!("export to xschem or virtuoso, not {to}"),
     };
-    let mut argv = vec![
+    vec![
         "schemify-interop".to_owned(),
         cmd.to_owned(),
         format!("{}/lib", version_dir(r.family, version)),
-    ];
-    argv.extend(
-        cells
-            .iter()
-            .map(|d| format!("{}/{}.shprim", r.family, d.cell)),
-    );
-    argv.extend(["-o".to_owned(), o]);
-    Some(argv)
+        ".".to_owned(),
+        "-o".to_owned(),
+        o,
+    ]
 }
 
 /// Version ids in `ciel ls-remote` output: every 40-digit hex word, first occurrence order.
@@ -1156,23 +1149,26 @@ mod tests {
     }
 
     #[test]
-    fn exports_name_every_generated_cell() {
-        let fp = recipe("freepdk45").unwrap();
-        let a = export_argv(fp, "ncsu", "xschem").unwrap();
+    fn exports_name_the_whole_library() {
+        let a = export_argv(recipe("freepdk45").unwrap(), "ncsu", "xschem");
         assert_eq!(
-            a[..3],
+            a,
             [
                 "schemify-interop",
                 "xschem-export",
-                ".schemify/pdks/freepdk45/ncsu/lib"
+                ".schemify/pdks/freepdk45/ncsu/lib",
+                ".",
+                "-o",
+                "../export/xschem"
             ]
         );
-        assert_eq!(a[3], "freepdk45/nmos_vtl.shprim");
-        assert_eq!(a.len(), 3 + 8 + 2);
-        assert_eq!(a[a.len() - 2..], ["-o", "../export/xschem"]);
-        let v = export_argv(recipe("asap7").unwrap(), "v", "virtuoso").unwrap();
+        let v = export_argv(recipe("asap7").unwrap(), "v", "virtuoso");
         assert_eq!(v[1], "virtuoso-export");
         assert_eq!(v[v.len() - 2..], ["-o", "../export/asap7.sfyx"]);
-        assert_eq!(export_argv(recipe("sky130").unwrap(), "v", "xschem"), None);
+        // An imported family exports the same way: Interop lists the directory.
+        assert_eq!(
+            export_argv(recipe("sky130").unwrap(), "v", "xschem")[3],
+            "."
+        );
     }
 }

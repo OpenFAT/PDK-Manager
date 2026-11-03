@@ -935,11 +935,10 @@ fn exports_spawn_interop_on_local_installs() {
     w.cmd("pdk.install", &format!("freepdk45 ncsu {}", ext.display()));
     w.cmd("pdk.export", "freepdk45 ncsu xschem");
     let d = ".schemify/pdks/freepdk45/ncsu";
-    let cells = "freepdk45/nmos_vtl.shprim freepdk45/pmos_vtl.shprim freepdk45/nmos_vtg.shprim freepdk45/pmos_vtg.shprim freepdk45/nmos_vth.shprim freepdk45/pmos_vth.shprim freepdk45/nmos_thkox.shprim freepdk45/pmos_thkox.shprim";
     assert_eq!(
         w.take_log(),
         [format!(
-            "schemify-interop xschem-export {d}/lib {cells} -o ../export/xschem"
+            "schemify-interop xschem-export {d}/lib . -o ../export/xschem"
         )]
     );
     assert!(
@@ -952,18 +951,18 @@ fn exports_spawn_interop_on_local_installs() {
     assert_eq!(
         w.take_log(),
         [format!(
-            "schemify-interop virtuoso-export {d}/lib {cells} -o ../export/freepdk45.sfyx"
+            "schemify-interop virtuoso-export {d}/lib . -o ../export/freepdk45.sfyx"
         )]
     );
-    // An imported family's cells cannot be listed: refused, nothing spawned.
+    // An imported family exports the same way: Interop lists its library directory.
     w.cmd("pdk.install", &format!("sky130 {V1}"));
     w.take_log();
     w.cmd("pdk.export", &format!("sky130 {V1} virtuoso"));
-    assert!(w.take_log().is_empty());
-    assert!(
-        w.ui().contains("imported cells cannot be listed"),
-        "{}",
-        w.ui()
+    assert_eq!(
+        w.take_log(),
+        [format!(
+            "schemify-interop virtuoso-export .schemify/pdks/sky130/{V1}/lib . -o ../export/sky130.sfyx"
+        )]
     );
     for bad in ["freepdk45 ncsu spectre", "freepdk45 ncsu", "nope v xschem"] {
         w.cmd("pdk.export", bad);
