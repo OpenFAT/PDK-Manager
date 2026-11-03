@@ -579,4 +579,11 @@ spawned by name, never linked, and in the dev shell through the flake's `interop
   Interop's `xschem-export` / `virtuoso-export`. A remote family is always refused. Imported
   (ciel) families are refused too: the plugin ABI cannot list a directory, so the plugin
   does not know their cells.
-- Model-dialect conversion will go through the SpiceRack IR (not implemented here).
+- **The store (SpiceRack IR).** An install's last spawn, `schemify-interop pdk-models … --from
+  spice --to rack -o <dir>/rack`, writes every model file the kit's entries reach as
+  SpiceRack `CircuitIR` JSON, at the same relative paths. `pdk.export F V
+  spice|hspice|spectre|vacask|xyce` writes that dialect from the store into
+  `<dir>/export/<dialect>`. A store written with losses (exit 1: SpiceRack did not read some
+  lines, or a referenced file is missing) does not fail the install; the counts stay in the
+  step's output. Simulations still read the kit itself; remote kits are never stored or
+  converted.

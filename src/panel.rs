@@ -37,7 +37,7 @@ pub fn commands(m: &Model) -> String {
         ("pdk.prune.confirm", "PDKs: confirm the prune"),
         (
             "pdk.export",
-            "PDKs: export <family> <version> xschem|virtuoso (local installs)",
+            "PDKs: export <family> <version> xschem|virtuoso|spice|hspice|spectre|vacask|xyce (local installs)",
         ),
         (
             "pdk.remote.add",

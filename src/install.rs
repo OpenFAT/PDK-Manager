@@ -47,7 +47,8 @@ impl Step {
 
 /// The steps of `pdk.install <family> <version> [local]` (spec §3): remove `STATE`, add the
 /// index row, fetch (or record the `local` kit's path in `ROOT`), import or generate the
-/// devices, write the corner library and `tech.map`, write `STATE` = `ok` last.
+/// devices, write the corner library, store the models as SpiceRack IR (`<dir>/rack`), write
+/// `tech.map`, write `STATE` = `ok` last.
 ///
 /// `version` must be the recipe's pinned version for `git` and `url` sources unless `local`
 /// is given ([`crate::pinned_version`]); `local` must pass [`crate::local_refusal`].
@@ -128,6 +129,10 @@ pub fn install_steps(r: &Recipe, version: &str, local: Option<&str>) -> Vec<Step
             ));
         }
     }
+    s.push(Step::Spawn(
+        "store (SpiceRack)",
+        crate::store_argv(r, version, &root),
+    ));
     s.push(Step::Write(
         "tech.map",
         format!("{dir}/tech.map"),
@@ -142,7 +147,7 @@ pub fn install_steps(r: &Recipe, version: &str, local: Option<&str>) -> Vec<Step
     s
 }
 
-fn argv(words: &[&str]) -> Vec<String> {
+pub(crate) fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| (*w).to_owned()).collect()
 }
 
@@ -471,8 +476,12 @@ mod tests {
             .filter(|l| l.starts_with("devices: write"))
             .collect();
         assert_eq!(cells.len(), 9, "8 cells and the library manifest");
+        let store = format!(
+            "devices: write {d}/lib/schemify.project\nstore (SpiceRack): schemify-interop pdk-models --root {d}/root --entry "
+        );
+        assert!(got.contains(&store), "{got}");
         assert!(got.ends_with(&format!(
-            "devices: write {d}/lib/schemify.project\ntech.map: write {d}/tech.map\nstate: write {d}/STATE\n"
+            " --from spice --to rack -o {d}/rack\ntech.map: write {d}/tech.map\nstate: write {d}/STATE\n"
         )));
     }
 
@@ -551,6 +560,7 @@ mod tests {
                 "remove {d}/STATE\nindex\nremove {d}/ROOT\n\
                  fetch (ciel): ciel enable --pdk-family sky130 --pdk-root {d}/root -l sky130_fd_pr v1\n\
                  import (schemify-interop): schemify-interop xschem-import {d}/root/sky130A/libs.tech/xschem -o {d}/lib --xschemrc {d}/root/sky130A/libs.tech/xschem/xschemrc\n\
+                 store (SpiceRack): schemify-interop pdk-models --root {d}/root --entry sky130A/libs.tech/combined/sky130.lib.spice --from spice --to rack -o {d}/rack\n\
                  tech.map: write {d}/tech.map\nstate: write {d}/STATE\n"
             )
         );

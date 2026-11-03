@@ -12,7 +12,7 @@
 //!   library manifest → write `schemify.project` (the app then runs `project.reload`);
 //! - `pdk.remove F V` / `pdk.prune [confirm]`: refresh → refuse active/locked → `fs_remove`
 //!   each version directory → rewrite the index → refresh;
-//! - `pdk.export F V xschem|virtuoso`: refresh → refuse a remote family or an incomplete
+//! - `pdk.export F V xschem|virtuoso|<model dialect>`: refresh → refuse a remote family or an incomplete
 //!   install → spawn the Interop export;
 //! - `pdk.remote.add|trust|forget F`: refresh → rewrite `pdks.remote`, the trusted list, or
 //!   remove the cache and the manifest rows → refresh;
@@ -30,9 +30,9 @@ use schemify_abi::{Code, Event, Kind, Level, Out, text};
 use crate::install::{ARCHIVE_BYTES_MAX, HASH_CHUNK, Sha256, Step, derive_cmg, install_steps};
 use crate::remote::{self, REMOTES, Remote, TRUSTED};
 use crate::{
-    Fv, INDEX, Job, Model, RECIPES, Source, export_argv, forget_manifest, local_refusal,
-    parse_index, parse_versions, pinned_version, prune_plan, recipe, references, remote_manifest,
-    remove_refusal, tail, use_manifest, valid_version, version_dir, write_index,
+    Fv, INDEX, Job, MODEL_DIALECTS, Model, RECIPES, Source, export_argv, forget_manifest,
+    local_refusal, parse_index, parse_versions, pinned_version, prune_plan, recipe, references,
+    remote_manifest, remove_refusal, tail, use_manifest, valid_version, version_dir, write_index,
 };
 
 guest::export!(on_event);
@@ -333,8 +333,16 @@ fn command(s: &mut State, host: &Host, out: &mut Out, name: &str, args: &str) {
                 .map(|v| v.into_owned())
                 .collect();
             match &w[..] {
-                [f, v, to] if to == "xschem" || to == "virtuoso" => {
-                    let to = if to == "xschem" { "xschem" } else { "virtuoso" };
+                [f, v, to]
+                    if to == "xschem"
+                        || to == "virtuoso"
+                        || MODEL_DIALECTS.contains(&to.as_str()) =>
+                {
+                    let to = ["xschem", "virtuoso"]
+                        .into_iter()
+                        .chain(MODEL_DIALECTS)
+                        .find(|d| d == to)
+                        .expect("checked");
                     refresh(
                         s,
                         host,
@@ -346,7 +354,7 @@ fn command(s: &mut State, host: &Host, out: &mut Out, name: &str, args: &str) {
                     s,
                     out,
                     Level::Error,
-                    "pdk.export: expected <family> <version> xschem|virtuoso",
+                    "pdk.export: expected <family> <version> xschem|virtuoso|spice|hspice|spectre|vacask|xyce",
                 ),
             }
         }
@@ -530,6 +538,9 @@ fn step_done(s: &mut State, host: &Host, out: &mut Out, i: usize, status: i32, b
     let gone = Code::Gone.neg();
     let failure = match &s.steps[i] {
         Step::Remove(_) => (status < 0 && status != gone).then(|| "cannot remove".to_owned()),
+        // pdk-models exits 1 for a store written with losses: its `lost`/`missing` lines
+        // stay in the step's output; the kit itself is still what simulations read.
+        Step::Spawn(_, a) if a[1] == "pdk-models" && status == 1 => None,
         Step::Spawn(_, a) => (status != 0).then(|| format!("{} exit {status}", a[0])),
         Step::Verify(path, _) if status < 0 || bytes.len() > ARCHIVE_BYTES_MAX => {
             Some(format!("cannot read {path}"))

@@ -430,16 +430,69 @@ pub fn import_argv(r: &Recipe, version: &str, root: &str) -> Vec<String> {
     argv
 }
 
-/// `schemify-interop xschem-export|virtuoso-export <dir>/lib . -o ../export/xschem|
-/// ../export/<family>.sfyx` (`to` is `xschem` or `virtuoso`): the install's library directory
-/// is the project (its `schemify.project` names the library; the paths after it are relative
-/// to it), and `.` names every cell file under it (Interop expands a directory), so imported
+/// The simulator dialects `pdk.export` writes a local install's models in, from its store.
+pub const MODEL_DIALECTS: [&str; 5] = ["spice", "hspice", "spectre", "vacask", "xyce"];
+
+/// The kit's model files relative to its root: the sectioned file, or every corner's files.
+pub fn model_entries(r: &Recipe) -> Vec<String> {
+    match (r.source, r.models) {
+        (Source::Ciel { variant, .. }, Models::Sections { file, .. }) => {
+            vec![format!("{variant}/{file}")]
+        }
+        (_, Models::Sections { file, .. }) => vec![file.to_owned()],
+        (_, Models::Files(corners)) => {
+            let mut v: Vec<String> = Vec::new();
+            for f in corners.iter().flat_map(|c| c.1.iter()) {
+                if !v.iter().any(|x| x == f) {
+                    v.push((*f).to_owned());
+                }
+            }
+            v
+        }
+    }
+}
+
+/// `schemify-interop pdk-models --from <from> --to <to> --root <root> --entry … -o <o>`.
+fn models_argv(r: &Recipe, root: &str, from: &str, to: &str, o: String) -> Vec<String> {
+    let mut a = install::argv(&["schemify-interop", "pdk-models", "--root", root]);
+    for e in model_entries(r) {
+        a.extend(["--entry".to_owned(), e]);
+    }
+    a.extend(install::argv(&["--from", from, "--to", to, "-o"]));
+    a.push(o);
+    a
+}
+
+/// The install step writing the store: the kit's model files (read as ngspice, as Schemify
+/// runs them) as SpiceRack IR under `<dir>/rack`, same relative paths as under `root`.
+pub fn store_argv(r: &Recipe, version: &str, root: &str) -> Vec<String> {
+    let o = format!("{}/rack", version_dir(r.family, version));
+    models_argv(r, root, "spice", "rack", o)
+}
+
+/// `to` is `xschem` or `virtuoso`: `schemify-interop xschem-export|virtuoso-export <dir>/lib .
+/// -o ../export/xschem|../export/<family>.sfyx`. The install's library directory is the
+/// project (its `schemify.project` names the library; the paths after it are relative to
+/// it), and `.` names every cell file under it (Interop expands a directory), so imported
 /// families export too: the plugin cannot list their cells itself.
+///
+/// `to` one of [`MODEL_DIALECTS`]: the models in that dialect from the store
+/// (`<dir>/rack`, [`store_argv`]) into `<dir>/export/<to>`.
 pub fn export_argv(r: &Recipe, version: &str, to: &str) -> Vec<String> {
+    let dir = version_dir(r.family, version);
+    if MODEL_DIALECTS.contains(&to) {
+        return models_argv(
+            r,
+            &format!("{dir}/rack"),
+            "rack",
+            to,
+            format!("{dir}/export/{to}"),
+        );
+    }
     let (cmd, o) = match to {
         "xschem" => ("xschem-export", "../export/xschem".to_owned()),
         "virtuoso" => ("virtuoso-export", format!("../export/{}.sfyx", r.family)),
-        _ => panic!("export to xschem or virtuoso, not {to}"),
+        _ => panic!("export to xschem, virtuoso or a model dialect, not {to}"),
     };
     vec![
         "schemify-interop".to_owned(),
@@ -1146,6 +1199,35 @@ mod tests {
             !back.contains("tsmc28") && !back.contains("/proj/pdk"),
             "{back}"
         );
+    }
+
+    #[test]
+    fn the_store_and_model_exports_name_every_model_file() {
+        let sky = recipe("sky130").unwrap();
+        let a = store_argv(sky, "v", ".schemify/pdks/sky130/v/root");
+        let want = "schemify-interop pdk-models --root .schemify/pdks/sky130/v/root \
+             --entry sky130A/libs.tech/combined/sky130.lib.spice --from spice --to rack \
+             -o .schemify/pdks/sky130/v/rack";
+        assert_eq!(
+            a.join(" "),
+            want.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
+        let e = export_argv(sky, "v", "spectre");
+        assert_eq!(e[3], ".schemify/pdks/sky130/v/rack");
+        assert_eq!(
+            e[e.len() - 5..],
+            [
+                "rack",
+                "--to",
+                "spectre",
+                "-o",
+                ".schemify/pdks/sky130/v/export/spectre"
+            ]
+        );
+        // A kit with a file per corner: each file once.
+        let f = model_entries(recipe("freepdk45").unwrap());
+        assert_eq!(f.len(), 24);
+        assert!(f.iter().all(|x| f.iter().filter(|y| *y == x).count() == 1));
     }
 
     #[test]

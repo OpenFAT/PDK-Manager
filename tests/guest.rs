@@ -1108,6 +1108,18 @@ fn real_kits_simulate_an_inverter() {
             w.ui(),
             w.faults()
         );
+        // The store holds the kit's models as SpiceRack IR, and a dialect comes out of it.
+        let corners = std::fs::read_dir(dir.join(&d).join("rack"))
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert!(corners > 0, "no store under {d}/rack\n{}", w.ui());
+        w.cmd("pdk.export", &format!("{family} {version} spectre"));
+        assert!(
+            dir.join(&d).join("export/spectre").is_dir(),
+            "{}\n{:?}",
+            w.ui(),
+            w.faults()
+        );
         w.cmd("pdk.use", &format!("{family} {version}"));
         assert!(
             w.read("schemify.project")
