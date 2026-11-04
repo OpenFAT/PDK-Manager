@@ -723,8 +723,9 @@ pub fn prune_plan(
 /// libraries (paths prefixed with `<dir>/lib/`), `lib tech map <dir>/tech.map`,
 /// `set PDK_ROOT <root>` (`<dir>/root`, or a `local` kit's path), `set PDK <variant>` (ciel
 /// families), `set PDK_MODELS` (the sectioned models file, or the generated
-/// `<dir>/models/corners.lib`) and the import's `set` entries. Everything else, comments
-/// included, is kept in order and byte for byte.
+/// `<dir>/models/corners.lib`) and the import's `set` entries. Everything else, the header
+/// (its `init`, the Lua file that adds the project's plugins) and comments included, is kept
+/// in order and byte for byte.
 ///
 /// # Errors
 ///
@@ -986,7 +987,7 @@ mod tests {
         assert_eq!(write_index(&idx), "sky130 a\nsky130 b\n");
     }
 
-    const MANIFEST: &str = "schemify 1 project\n\n# my own library\nlib mine path lib\nlib sky130_fd_pr path .schemify/pdks/sky130/old/lib/sky130_fd_pr\nlib tech map .schemify/pdks/sky130/old/tech.map\n\nplugin pdk-manager path plugins/pdk-manager\n  grant write_project\n\nset PDK_ROOT .schemify/pdks/sky130/old/root\nset SKYWATER_MODELS ${PDK_ROOT}/${PDK}/libs.tech/combined\nset MINE 1\n";
+    const MANIFEST: &str = "schemify 1 project\n  init init.lua\n\n# my own library\nlib mine path lib\nlib sky130_fd_pr path .schemify/pdks/sky130/old/lib/sky130_fd_pr\nlib tech map .schemify/pdks/sky130/old/tech.map\n\nset PDK_ROOT .schemify/pdks/sky130/old/root\nset SKYWATER_MODELS ${PDK_ROOT}/${PDK}/libs.tech/combined\nset MINE 1\n";
     const ROOT2: &str = ".schemify/pdks/gf180mcu/v2/root";
     const IMPORT: &str = "schemify 1 project\nlib gf180mcu_fd_pr path gf180mcu_fd_pr\n\nset GF_MODELS ${PDK_ROOT}/${PDK}/libs.tech/ngspice\n";
 
@@ -996,7 +997,7 @@ mod tests {
         let text = use_manifest(MANIFEST.as_bytes(), IMPORT.as_bytes(), r, "v2", ROOT2).unwrap();
         assert_eq!(
             text,
-            "schemify 1 project\n\n# my own library\nlib mine path lib\n\nplugin pdk-manager path plugins/pdk-manager\n  grant write_project\n\nset MINE 1\n\nlib gf180mcu_fd_pr path .schemify/pdks/gf180mcu/v2/lib/gf180mcu_fd_pr\nlib tech map .schemify/pdks/gf180mcu/v2/tech.map\n\nset PDK_ROOT .schemify/pdks/gf180mcu/v2/root\nset PDK gf180mcuD\nset PDK_MODELS ${PDK_ROOT}/gf180mcuD/libs.tech/ngspice/sm141064.ngspice\nset GF_MODELS ${PDK_ROOT}/${PDK}/libs.tech/ngspice\n"
+            "schemify 1 project\n  init init.lua\n\n# my own library\nlib mine path lib\n\nset MINE 1\n\nlib gf180mcu_fd_pr path .schemify/pdks/gf180mcu/v2/lib/gf180mcu_fd_pr\nlib tech map .schemify/pdks/gf180mcu/v2/tech.map\n\nset PDK_ROOT .schemify/pdks/gf180mcu/v2/root\nset PDK gf180mcuD\nset PDK_MODELS ${PDK_ROOT}/gf180mcuD/libs.tech/ngspice/sm141064.ngspice\nset GF_MODELS ${PDK_ROOT}/${PDK}/libs.tech/ngspice\n"
         );
         // The independent oracle: the format writer reproduces it (canonical, parses).
         let d = schemify_format::parse(text.as_bytes()).expect("parses");
@@ -1141,7 +1142,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             text,
-            "schemify 1 project\n\n# my own library\nlib mine path lib\n\nplugin pdk-manager path plugins/pdk-manager\n  grant write_project\n\nset MINE 1\n\nlib freepdk45 path .schemify/pdks/freepdk45/ncsu/lib/freepdk45\nlib tech map .schemify/pdks/freepdk45/ncsu/tech.map\n\nset PDK_ROOT \"/opt/FreePDK 45\"\nset PDK_MODELS .schemify/pdks/freepdk45/ncsu/models/corners.lib\n"
+            "schemify 1 project\n  init init.lua\n\n# my own library\nlib mine path lib\n\nset MINE 1\n\nlib freepdk45 path .schemify/pdks/freepdk45/ncsu/lib/freepdk45\nlib tech map .schemify/pdks/freepdk45/ncsu/tech.map\n\nset PDK_ROOT \"/opt/FreePDK 45\"\nset PDK_MODELS .schemify/pdks/freepdk45/ncsu/models/corners.lib\n"
         );
         let d = schemify_format::parse(text.as_bytes()).expect("parses");
         assert_eq!(schemify_format::write(&d), text);

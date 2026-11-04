@@ -48,14 +48,12 @@ counts for ASAP7.
 
 ```diff
  schemify 1 project
+   init init.lua
 
  # my own library
  lib mine path lib
 -lib sky130_fd_pr path .schemify/pdks/sky130/<old>/lib/sky130_fd_pr
 -lib tech map .schemify/pdks/sky130/<old>/tech.map
-
- plugin pdk-manager path plugins/pdk-manager
-   grant write_project
 
 -set PDK_ROOT .schemify/pdks/sky130/<old>/root
 -set SKYWATER_MODELS ${PDK_ROOT}/${PDK}/libs.tech/combined
@@ -140,19 +138,22 @@ was denied. To pin a commit, add `rev = "<sha>"`.
 <details>
 <summary>Or load it in a single project, from a checkout</summary>
 
-Add this to the project's `schemify.project`:
+Name a Lua file in the project manifest's header (`schemify 1 project`, then `  init init.lua`;
+a project manifest takes no `plugin` records), and add the checkout there as a project package:
 
+```lua
+schemify.pack.add {
+  {
+    path = "<checkout>",
+    grant = {
+      "read_project", "write_project", "spawn:ciel", "spawn:schemify-interop",
+      "spawn:git", "spawn:curl", "spawn:tar", "spawn:ssh",
+    },
+  },
+}
 ```
-plugin pdk-manager path <checkout>/pdk_manager.wasm
-  grant read_project
-  grant write_project
-  grant spawn:ciel
-  grant spawn:schemify-interop
-  grant spawn:git
-  grant spawn:curl
-  grant spawn:tar
-  grant spawn:ssh
-```
+
+The editor loads it once you trust the project's init file.
 
 </details>
 
