@@ -81,17 +81,17 @@ dependencies = [
 [[package]]
 name = "schemify-abi"
 version = "1.0.1"
-source = "git+https://github.com/OpenFAT/Schemify?rev=cd03d0c104633ec69721e62b7610e3290c8c3a88#cd03d0c104633ec69721e62b7610e3290c8c3a88"
+source = "git+https://github.com/OpenFAT/Schemify?rev=695929ea5eda3eb5cf1c1f70df1a9dcc630b1291#695929ea5eda3eb5cf1c1f70df1a9dcc630b1291"
 
 [[package]]
 name = "schemify-format"
 version = "1.0.1"
-source = "git+https://github.com/OpenFAT/Schemify?rev=cd03d0c104633ec69721e62b7610e3290c8c3a88#cd03d0c104633ec69721e62b7610e3290c8c3a88"
+source = "git+https://github.com/OpenFAT/Schemify?rev=695929ea5eda3eb5cf1c1f70df1a9dcc630b1291#695929ea5eda3eb5cf1c1f70df1a9dcc630b1291"
 
 [[package]]
 name = "schemify-plugin"
 version = "1.0.1"
-source = "git+https://github.com/OpenFAT/Schemify?rev=cd03d0c104633ec69721e62b7610e3290c8c3a88#cd03d0c104633ec69721e62b7610e3290c8c3a88"
+source = "git+https://github.com/OpenFAT/Schemify?rev=695929ea5eda3eb5cf1c1f70df1a9dcc630b1291#695929ea5eda3eb5cf1c1f70df1a9dcc630b1291"
 dependencies = [
  "schemify-abi",
  "schemify-format",
