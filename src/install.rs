@@ -552,7 +552,7 @@ state: write {d}/STATE
             render(&install_steps(r, "v1", None)),
             format!(
                 "remove {d}/STATE\nindex\nremove {d}/ROOT\n\
-                 fetch (ciel): ciel enable --pdk-family sky130 --pdk-root {d}/root -l sky130_fd_pr v1\n\
+                 fetch (ciel): schemify-interop ciel enable --pdk-family sky130 --pdk-root {d}/root -l sky130_fd_pr v1\n\
                  import (schemify-interop): schemify-interop xschem-import {d}/root/sky130A/libs.tech/xschem -o {d}/lib --xschemrc {d}/root/sky130A/libs.tech/xschem/xschemrc\n\
                  tech.map: write {d}/tech.map\nstate: write {d}/STATE\n"
             )

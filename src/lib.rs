@@ -367,7 +367,8 @@ pub fn version_dir(family: &str, version: &str) -> String {
     format!("{STORE}/{family}/{version}")
 }
 
-/// `ciel ls-remote --pdk-family <family>`.
+/// `schemify-interop ciel ls-remote --pdk-family <family>` (Interop runs ciel from `PATH`,
+/// else from a pinned private copy it installs).
 ///
 /// # Panics
 ///
@@ -376,12 +377,18 @@ pub fn ls_remote_argv(r: &Recipe) -> Vec<String> {
     let Source::Ciel { family, .. } = r.source else {
         panic!("{} is not a ciel family", r.family)
     };
-    ["ciel", "ls-remote", "--pdk-family", family]
-        .map(str::to_owned)
-        .to_vec()
+    [
+        "schemify-interop",
+        "ciel",
+        "ls-remote",
+        "--pdk-family",
+        family,
+    ]
+    .map(str::to_owned)
+    .to_vec()
 }
 
-/// `ciel enable --pdk-family F --pdk-root <dir>/root [-l LIB]… V`: fetches the version and
+/// `schemify-interop ciel enable --pdk-family F --pdk-root <dir>/root [-l LIB]… V`: fetches the version and
 /// links `<root>/<variant>` to it (spec §3 step 1).
 ///
 /// # Panics
@@ -392,16 +399,23 @@ pub fn fetch_argv(r: &Recipe, version: &str) -> Vec<String> {
         panic!("{} is not a ciel family", r.family)
     };
     let root = format!("{}/root", version_dir(r.family, version));
-    let mut argv: Vec<String> = ["ciel", "enable", "--pdk-family", family, "--pdk-root"]
-        .map(str::to_owned)
-        .to_vec();
+    let mut argv: Vec<String> = [
+        "schemify-interop",
+        "ciel",
+        "enable",
+        "--pdk-family",
+        family,
+        "--pdk-root",
+    ]
+    .map(str::to_owned)
+    .to_vec();
     argv.push(root);
     for l in libs {
         argv.push("-l".to_owned());
         argv.push((*l).to_owned());
     }
     argv.push(version.to_owned());
-    assert_eq!(argv.len(), 7 + 2 * libs.len());
+    assert_eq!(argv.len(), 8 + 2 * libs.len());
     argv
 }
 
@@ -927,7 +941,7 @@ mod tests {
         let r = recipe("sky130").unwrap();
         assert_eq!(
             fetch_argv(r, "abc123").join(" "),
-            "ciel enable --pdk-family sky130 --pdk-root .schemify/pdks/sky130/abc123/root -l sky130_fd_pr abc123"
+            "schemify-interop ciel enable --pdk-family sky130 --pdk-root .schemify/pdks/sky130/abc123/root -l sky130_fd_pr abc123"
         );
         assert_eq!(
             import_argv(r, "abc123", ".schemify/pdks/sky130/abc123/root").join(" "),
@@ -936,11 +950,11 @@ mod tests {
         let ihp = recipe("ihp-sg13g2").unwrap();
         assert_eq!(
             fetch_argv(ihp, "v1").join(" "),
-            "ciel enable --pdk-family ihp-sg13 --pdk-root .schemify/pdks/ihp-sg13g2/v1/root v1"
+            "schemify-interop ciel enable --pdk-family ihp-sg13 --pdk-root .schemify/pdks/ihp-sg13g2/v1/root v1"
         );
         assert_eq!(
             ls_remote_argv(ihp).join(" "),
-            "ciel ls-remote --pdk-family ihp-sg13"
+            "schemify-interop ciel ls-remote --pdk-family ihp-sg13"
         );
         assert!(recipe("asap7").is_some() && recipe("nope").is_none());
     }
