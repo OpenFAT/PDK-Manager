@@ -76,9 +76,9 @@ everything else, and appends the new kit's lines.
 
 | Family | Node | Source | Versions | Needs on `PATH` |
 |---|---|---|---|---|
-| `sky130` | 130 nm | [ciel](https://github.com/fossi-foundation/ciel) (open_pdks builds), xschem symbols imported | any ciel lists | `ciel`, `schemify-interop` |
-| `gf180mcu` | 180 nm | ciel, xschem symbols imported | any ciel lists | `ciel`, `schemify-interop` |
-| `ihp-sg13g2` | 130 nm SiGe BiCMOS | ciel, xschem symbols imported | any ciel lists | `ciel`, `schemify-interop` |
+| `sky130` | 130 nm | [ciel](https://github.com/fossi-foundation/ciel) (open_pdks builds), xschem symbols imported | any ciel lists | `schemify-interop` |
+| `gf180mcu` | 180 nm | ciel, xschem symbols imported | any ciel lists | `schemify-interop` |
+| `ihp-sg13g2` | 130 nm SiGe BiCMOS | ciel, xschem symbols imported | any ciel lists | `schemify-interop` |
 | `freepdk45` | 45 nm | pinned, sha256-checked download; device cells generated | `5b93a0b1e12d` | `curl`, `tar` |
 | `asap7` | 7 nm FinFET | pinned `git` checkout; device cells generated, BSIM-CMG through OSDI | `58d72c9d291e186a77468586ab0c43d8a21eda6a` | `git` |
 
@@ -122,7 +122,7 @@ schemify.pack.add {
     src = "https://github.com/OpenFAT/PDK-Manager",
     grant = {
       "read_project", "write_project",
-      "spawn:ciel", "spawn:schemify-interop",  -- sky130, gf180mcu, ihp-sg13g2
+      "spawn:schemify-interop",                -- sky130, gf180mcu, ihp-sg13g2 (it runs ciel)
       "spawn:git",                             -- asap7
       "spawn:curl", "spawn:tar",               -- freepdk45
       "spawn:ssh",                             -- remote PDKs
@@ -146,7 +146,7 @@ schemify.pack.add {
   {
     path = "<checkout>",
     grant = {
-      "read_project", "write_project", "spawn:ciel", "spawn:schemify-interop",
+      "read_project", "write_project", "spawn:schemify-interop",
       "spawn:git", "spawn:curl", "spawn:tar", "spawn:ssh",
     },
   },

@@ -23,10 +23,9 @@ use std::process::{Command, Stdio};
 use schemify_plugin::abi::{Code, Event, FUEL_DEFAULT, Kind};
 use schemify_plugin::{IoOp, PluginEvents, PluginId, Plugins, RequestQueues, Snapshots, deliver};
 
-const GRANTS: [&str; 8] = [
+const GRANTS: [&str; 7] = [
     "read_project",
     "write_project",
-    "spawn:ciel",
     "spawn:schemify-interop",
     "spawn:git",
     "spawn:curl",
@@ -55,9 +54,11 @@ esac
 exit 64
 "#;
 
-/// The fake `schemify-interop xschem-import`: logs its argv; writes `<out>/schemify.project` and one cell, or
-/// fails when the output directory names `$FAIL_IMPORT`.
+/// The fake `schemify-interop`: `ciel …` hands over to the fake ciel beside it (which logs);
+/// `xschem-import` logs its argv and writes `<out>/schemify.project` and one cell, or fails
+/// when the output directory names `$FAIL_IMPORT`.
 const FAKE_INTEROP: &str = r#"#!/bin/sh
+if [ "$1" = ciel ]; then shift; exec "$(dirname "$0")/ciel" "$@"; fi
 echo "schemify-interop $*" >> "$FAKE_LOG"
 case "$1" in
 xschem-export|virtuoso-export) echo "exported"; exit 0 ;;

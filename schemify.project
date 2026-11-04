@@ -3,7 +3,6 @@ schemify 1 project
 plugin pdk-manager path pdk_manager.wasm
   grant read_project
   grant write_project
-  grant spawn:ciel
   grant spawn:schemify-interop
   grant spawn:git
   grant spawn:curl
