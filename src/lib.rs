@@ -9,6 +9,8 @@
 //!   which versions are active or locked, and the prune plan;
 //! - [`install`] — an install as a list of [`install::Step`]s (§3), and the files it generates:
 //!   device cells, the corner library, OSDI model cards (§2.2, §7);
+//! - [`remote`] — remote PDKs over SSH (docs/remote-pdks.md): `pdks.remote`, trust, the ssh
+//!   argv, the `pdk-scan` reader;
 //! - [`panel`] — the docked "PDKs" panel (§4) as UI records over a [`Model`];
 //! - on wasm32, the guest glue: commands → I/O chains (`fs_read`, `fs_write`, `fs_remove`,
 //!   `spawn`) → model → panel.
@@ -21,6 +23,7 @@
 
 pub mod install;
 pub mod panel;
+pub mod remote;
 
 use schemify_abi::text;
 
@@ -427,6 +430,71 @@ pub fn import_argv(r: &Recipe, version: &str, root: &str) -> Vec<String> {
     argv
 }
 
+/// The simulator dialects `pdk.export` writes a local install's models in. The store is the
+/// kit's own files (`ROOT`, or `<dir>/root`) read from [`model_entries`] in order, converted
+/// on demand: the source is the only lossless form.
+pub const MODEL_DIALECTS: [&str; 5] = ["spice", "hspice", "spectre", "vacask", "xyce"];
+
+/// The kit's model files relative to its root: the sectioned file, or every corner's files.
+pub fn model_entries(r: &Recipe) -> Vec<String> {
+    match (r.source, r.models) {
+        (Source::Ciel { variant, .. }, Models::Sections { file, .. }) => {
+            vec![format!("{variant}/{file}")]
+        }
+        (_, Models::Sections { file, .. }) => vec![file.to_owned()],
+        (_, Models::Files(corners)) => {
+            let mut v: Vec<String> = Vec::new();
+            for f in corners.iter().flat_map(|c| c.1.iter()) {
+                if !v.iter().any(|x| x == f) {
+                    v.push((*f).to_owned());
+                }
+            }
+            v
+        }
+    }
+}
+
+/// `schemify-interop pdk-models --from <from> --to <to> --root <root> --entry … -o <o>`.
+fn models_argv(r: &Recipe, root: &str, from: &str, to: &str, o: String) -> Vec<String> {
+    let mut a = install::argv(&["schemify-interop", "pdk-models", "--root", root]);
+    for e in model_entries(r) {
+        a.extend(["--entry".to_owned(), e]);
+    }
+    a.extend(install::argv(&["--from", from, "--to", to, "-o"]));
+    a.push(o);
+    a
+}
+
+/// `pdk.export <family> <version> <dialect>`: the kit's model files under `root` (read as
+/// ngspice, as Schemify runs them) in [`MODEL_DIALECTS`] `to`, into `<dir>/export/<to>`.
+pub fn models_export_argv(r: &Recipe, version: &str, root: &str, to: &str) -> Vec<String> {
+    assert!(MODEL_DIALECTS.contains(&to));
+    let o = format!("{}/export/{to}", version_dir(r.family, version));
+    models_argv(r, root, "spice", to, o)
+}
+
+/// `to` is `xschem` or `virtuoso`: `schemify-interop xschem-export|virtuoso-export <dir>/lib .
+/// -o ../export/xschem|../export/<family>.sfyx`. The install's library directory is the
+/// project (its `schemify.project` names the library; the paths after it are relative to
+/// it), and `.` names every cell file under it (Interop expands a directory), so imported
+/// families export too: the plugin cannot list their cells itself. Model dialects:
+/// [`models_export_argv`].
+pub fn export_argv(r: &Recipe, version: &str, to: &str) -> Vec<String> {
+    let (cmd, o) = match to {
+        "xschem" => ("xschem-export", "../export/xschem".to_owned()),
+        "virtuoso" => ("virtuoso-export", format!("../export/{}.sfyx", r.family)),
+        _ => panic!("export to xschem or virtuoso, not {to}"),
+    };
+    vec![
+        "schemify-interop".to_owned(),
+        cmd.to_owned(),
+        format!("{}/lib", version_dir(r.family, version)),
+        ".".to_owned(),
+        "-o".to_owned(),
+        o,
+    ]
+}
+
 /// Version ids in `ciel ls-remote` output: every 40-digit hex word, first occurrence order.
 pub fn parse_versions(out: &str) -> Vec<String> {
     let mut v: Vec<String> = Vec::new();
@@ -655,8 +723,9 @@ pub fn prune_plan(
 /// libraries (paths prefixed with `<dir>/lib/`), `lib tech map <dir>/tech.map`,
 /// `set PDK_ROOT <root>` (`<dir>/root`, or a `local` kit's path), `set PDK <variant>` (ciel
 /// families), `set PDK_MODELS` (the sectioned models file, or the generated
-/// `<dir>/models/corners.lib`) and the import's `set` entries. Everything else, comments
-/// included, is kept in order and byte for byte.
+/// `<dir>/models/corners.lib`) and the import's `set` entries. Everything else, the header
+/// (its `init`, the Lua file that adds the project's plugins) and comments included, is kept
+/// in order and byte for byte.
 ///
 /// # Errors
 ///
@@ -677,19 +746,7 @@ pub fn use_manifest(
         .map_err(|e| format!("schemify.project: {e}"))?;
     let (_, imp) = blocks(&utf8(import, "import manifest")?, "project")
         .map_err(|e| format!("{dir}/lib/schemify.project: {e}"))?;
-    fn field(b: &Block, i: usize) -> &str {
-        b.fields.get(i).map_or("", String::as_str)
-    }
-    let ours = |b: &Block| match b.word.as_str() {
-        "lib" => field(b, 0) == "tech" || field(b, 2).starts_with(".schemify/pdks/"),
-        "set" => {
-            matches!(field(b, 0), "PDK_ROOT" | "PDK" | "PDK_MODELS")
-                || field(b, 1).contains("PDK_ROOT")
-                || field(b, 1).contains(".schemify/pdks/")
-        }
-        _ => false,
-    };
-    let mut out: Vec<Block> = old.iter().filter(|b| !ours(b)).cloned().collect();
+    let mut out: Vec<Block> = old.iter().filter(|b| !pdk_owned(b)).cloned().collect();
     let kept = out.len();
     for b in imp
         .iter()
@@ -720,6 +777,76 @@ pub fn use_manifest(
     Ok(write_blocks(&header, &out))
 }
 
+fn field(b: &Block, i: usize) -> &str {
+    b.fields.get(i).map_or("", String::as_str)
+}
+
+/// The records `pdk.use` (and a remote refresh) own: every `lib` in the store or the remote
+/// cache, `lib tech`, `set PDK_ROOT|PDK|PDK_MODELS`, and every `set` naming `PDK_ROOT` or the
+/// store.
+fn pdk_owned(b: &Block) -> bool {
+    match b.word.as_str() {
+        "lib" => {
+            field(b, 0) == "tech"
+                || field(b, 2).starts_with(".schemify/pdks/")
+                || field(b, 2).starts_with(remote::CACHE)
+        }
+        "set" => {
+            matches!(field(b, 0), "PDK_ROOT" | "PDK" | "PDK_MODELS")
+                || field(b, 1).contains("PDK_ROOT")
+                || field(b, 1).contains(".schemify/pdks/")
+        }
+        _ => false,
+    }
+}
+
+fn manifest_blocks(manifest: &[u8]) -> Result<(Vec<String>, Vec<Block>), String> {
+    let text = std::str::from_utf8(manifest).map_err(|_| "schemify.project: not UTF-8")?;
+    blocks(text, "project").map_err(|e| format!("schemify.project: {e}"))
+}
+
+/// The manifest after `pdk.remote.refresh` of `family` (temporary, until the core serves
+/// plugin libraries: docs/remote-pdks.md "Implemented"), canonical: the family becomes the
+/// project's PDK as with `pdk.use`. Drops what [`pdk_owned`] names (keeping a `lib tech`
+/// outside `.schemify/`: the user's own map for the remote cells), then appends `lib <family>
+/// path .schemify/pdk-manager/remote/<family>` and `set PDK_MODELS <models>` (the corner
+/// library's absolute path on the PDK host, written verbatim into netlists).
+///
+/// # Errors
+///
+/// A file that does not split into records or is not a manifest, as text.
+pub fn remote_manifest(manifest: &[u8], family: &str, models: &str) -> Result<String, String> {
+    let (header, old) = manifest_blocks(manifest)?;
+    let users_map = |b: &Block| {
+        b.word == "lib" && field(b, 0) == "tech" && !field(b, 2).starts_with(".schemify/")
+    };
+    let mut out: Vec<Block> = old
+        .into_iter()
+        .filter(|b| !pdk_owned(b) || users_map(b))
+        .collect();
+    out.push(record("lib", &[family, "path", &remote::cache_dir(family)]));
+    out.push(record("set", &["PDK_MODELS", models]));
+    Ok(write_blocks(&header, &out))
+}
+
+/// The manifest after `pdk.remote.forget <family>`: without its `lib` row and, when that
+/// row was there, without `set PDK_MODELS`. `None` when the manifest has no such row.
+///
+/// # Errors
+///
+/// A file that does not split into records or is not a manifest, as text.
+pub fn forget_manifest(manifest: &[u8], family: &str) -> Result<Option<String>, String> {
+    let (header, old) = manifest_blocks(manifest)?;
+    let dir = remote::cache_dir(family);
+    let ours = |b: &Block| b.word == "lib" && field(b, 2) == dir;
+    if !old.iter().any(ours) {
+        return Ok(None);
+    }
+    let models = |b: &Block| b.word == "set" && field(b, 0) == "PDK_MODELS";
+    let out: Vec<Block> = old.into_iter().filter(|b| !ours(b) && !models(b)).collect();
+    Ok(Some(write_blocks(&header, &out)))
+}
+
 /// What the panel and the commands know: installs with their state, references, the
 /// remote listing, the running job.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -745,6 +872,14 @@ pub struct Model {
     pub prune: Option<Vec<(String, String)>>,
     /// The last outcome, for the panel's status row.
     pub message: String,
+    /// The `pdks.remote` records.
+    pub remotes: Vec<remote::Remote>,
+    /// The destinations trusted in this checkout.
+    pub trusted: Vec<String>,
+    /// The remote family being scanned, if any.
+    pub scanning: Option<String>,
+    /// The last remote operation's one-line outcome.
+    pub remote_outcome: String,
 }
 
 /// One install in progress (or the last one, when `failed`).
@@ -852,7 +987,7 @@ mod tests {
         assert_eq!(write_index(&idx), "sky130 a\nsky130 b\n");
     }
 
-    const MANIFEST: &str = "schemify 1 project\n\n# my own library\nlib mine path lib\nlib sky130_fd_pr path .schemify/pdks/sky130/old/lib/sky130_fd_pr\nlib tech map .schemify/pdks/sky130/old/tech.map\n\nplugin pdk-manager path plugins/pdk-manager\n  grant write_project\n\nset PDK_ROOT .schemify/pdks/sky130/old/root\nset SKYWATER_MODELS ${PDK_ROOT}/${PDK}/libs.tech/combined\nset MINE 1\n";
+    const MANIFEST: &str = "schemify 1 project\n  init init.lua\n\n# my own library\nlib mine path lib\nlib sky130_fd_pr path .schemify/pdks/sky130/old/lib/sky130_fd_pr\nlib tech map .schemify/pdks/sky130/old/tech.map\n\nset PDK_ROOT .schemify/pdks/sky130/old/root\nset SKYWATER_MODELS ${PDK_ROOT}/${PDK}/libs.tech/combined\nset MINE 1\n";
     const ROOT2: &str = ".schemify/pdks/gf180mcu/v2/root";
     const IMPORT: &str = "schemify 1 project\nlib gf180mcu_fd_pr path gf180mcu_fd_pr\n\nset GF_MODELS ${PDK_ROOT}/${PDK}/libs.tech/ngspice\n";
 
@@ -862,7 +997,7 @@ mod tests {
         let text = use_manifest(MANIFEST.as_bytes(), IMPORT.as_bytes(), r, "v2", ROOT2).unwrap();
         assert_eq!(
             text,
-            "schemify 1 project\n\n# my own library\nlib mine path lib\n\nplugin pdk-manager path plugins/pdk-manager\n  grant write_project\n\nset MINE 1\n\nlib gf180mcu_fd_pr path .schemify/pdks/gf180mcu/v2/lib/gf180mcu_fd_pr\nlib tech map .schemify/pdks/gf180mcu/v2/tech.map\n\nset PDK_ROOT .schemify/pdks/gf180mcu/v2/root\nset PDK gf180mcuD\nset PDK_MODELS ${PDK_ROOT}/gf180mcuD/libs.tech/ngspice/sm141064.ngspice\nset GF_MODELS ${PDK_ROOT}/${PDK}/libs.tech/ngspice\n"
+            "schemify 1 project\n  init init.lua\n\n# my own library\nlib mine path lib\n\nset MINE 1\n\nlib gf180mcu_fd_pr path .schemify/pdks/gf180mcu/v2/lib/gf180mcu_fd_pr\nlib tech map .schemify/pdks/gf180mcu/v2/tech.map\n\nset PDK_ROOT .schemify/pdks/gf180mcu/v2/root\nset PDK gf180mcuD\nset PDK_MODELS ${PDK_ROOT}/gf180mcuD/libs.tech/ngspice/sm141064.ngspice\nset GF_MODELS ${PDK_ROOT}/${PDK}/libs.tech/ngspice\n"
         );
         // The independent oracle: the format writer reproduces it (canonical, parses).
         let d = schemify_format::parse(text.as_bytes()).expect("parses");
@@ -1007,7 +1142,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             text,
-            "schemify 1 project\n\n# my own library\nlib mine path lib\n\nplugin pdk-manager path plugins/pdk-manager\n  grant write_project\n\nset MINE 1\n\nlib freepdk45 path .schemify/pdks/freepdk45/ncsu/lib/freepdk45\nlib tech map .schemify/pdks/freepdk45/ncsu/tech.map\n\nset PDK_ROOT \"/opt/FreePDK 45\"\nset PDK_MODELS .schemify/pdks/freepdk45/ncsu/models/corners.lib\n"
+            "schemify 1 project\n  init init.lua\n\n# my own library\nlib mine path lib\n\nset MINE 1\n\nlib freepdk45 path .schemify/pdks/freepdk45/ncsu/lib/freepdk45\nlib tech map .schemify/pdks/freepdk45/ncsu/tech.map\n\nset PDK_ROOT \"/opt/FreePDK 45\"\nset PDK_MODELS .schemify/pdks/freepdk45/ncsu/models/corners.lib\n"
         );
         let d = schemify_format::parse(text.as_bytes()).expect("parses");
         assert_eq!(schemify_format::write(&d), text);
@@ -1024,6 +1159,78 @@ mod tests {
         assert!(
             !back.contains("freepdk45") && !back.contains("FreePDK"),
             "{back}"
+        );
+    }
+
+    #[test]
+    fn remote_refresh_and_forget_rewrite_only_their_rows() {
+        let m = "schemify 1 project\n\nlib mine path lib\nlib tech map maps/mine.map\nlib sky130_fd_pr path .schemify/pdks/sky130/v1/lib/sky130_fd_pr\n\nset PDK_ROOT .schemify/pdks/sky130/v1/root\nset MINE 1\n";
+        let text = remote_manifest(m.as_bytes(), "tsmc28", "/proj/pdk/m.scs").unwrap();
+        assert_eq!(
+            text,
+            "schemify 1 project\n\nlib mine path lib\nlib tech map maps/mine.map\n\nset MINE 1\n\nlib tsmc28 path .schemify/pdk-manager/remote/tsmc28\n\nset PDK_MODELS /proj/pdk/m.scs\n"
+        );
+        let d = schemify_format::parse(text.as_bytes()).expect("parses");
+        assert_eq!(schemify_format::write(&d), text);
+        // Idempotent: a second refresh rewrites the same rows.
+        let again = remote_manifest(text.as_bytes(), "tsmc28", "/proj/pdk/m.scs").unwrap();
+        assert_eq!(again, text);
+        // Forget drops the family's lib and PDK_MODELS, nothing else; then has nothing to do.
+        let gone = forget_manifest(text.as_bytes(), "tsmc28").unwrap().unwrap();
+        assert_eq!(
+            gone,
+            "schemify 1 project\n\nlib mine path lib\nlib tech map maps/mine.map\n\nset MINE 1\n"
+        );
+        assert_eq!(forget_manifest(gone.as_bytes(), "tsmc28").unwrap(), None);
+        assert_eq!(forget_manifest(text.as_bytes(), "other").unwrap(), None);
+        assert!(remote_manifest(b"schemify 1 lock\n", "x", "/m").is_err());
+        // Switching back to a local family drops the remote rows.
+        let r = recipe("gf180mcu").unwrap();
+        let back = use_manifest(text.as_bytes(), IMPORT.as_bytes(), r, "v2", ROOT2).unwrap();
+        assert!(
+            !back.contains("tsmc28") && !back.contains("/proj/pdk"),
+            "{back}"
+        );
+    }
+
+    #[test]
+    fn model_exports_read_the_kit_itself_and_name_every_model_file() {
+        let sky = recipe("sky130").unwrap();
+        let a = models_export_argv(sky, "v", "/pdk", "spectre");
+        let want = "schemify-interop pdk-models --root /pdk \
+             --entry sky130A/libs.tech/combined/sky130.lib.spice --from spice --to spectre \
+             -o .schemify/pdks/sky130/v/export/spectre";
+        assert_eq!(
+            a.join(" "),
+            want.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
+        // A kit with a file per corner: each file once.
+        let f = model_entries(recipe("freepdk45").unwrap());
+        assert_eq!(f.len(), 24);
+        assert!(f.iter().all(|x| f.iter().filter(|y| *y == x).count() == 1));
+    }
+
+    #[test]
+    fn exports_name_the_whole_library() {
+        let a = export_argv(recipe("freepdk45").unwrap(), "ncsu", "xschem");
+        assert_eq!(
+            a,
+            [
+                "schemify-interop",
+                "xschem-export",
+                ".schemify/pdks/freepdk45/ncsu/lib",
+                ".",
+                "-o",
+                "../export/xschem"
+            ]
+        );
+        let v = export_argv(recipe("asap7").unwrap(), "v", "virtuoso");
+        assert_eq!(v[1], "virtuoso-export");
+        assert_eq!(v[v.len() - 2..], ["-o", "../export/asap7.sfyx"]);
+        // An imported family exports the same way: Interop lists the directory.
+        assert_eq!(
+            export_argv(recipe("sky130").unwrap(), "v", "xschem")[3],
+            "."
         );
     }
 }

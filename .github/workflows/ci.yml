@@ -1,5 +1,7 @@
 # Every push and PR: lint, the committed module equals its rebuild, the native and guest tests
-# (the guest runs through the real Schemify plugin host at the pinned rev).
+# (the guest runs through the real Schemify plugin host at the pinned rev). The dev shell has
+# the real schemify-interop (flake input `interop`): the remote-PDK test runs it once it
+# speaks pdk-scan, and skips until then.
 name: ci
 
 on:

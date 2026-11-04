@@ -1,7 +1,7 @@
 # Remote and proprietary PDKs: feasibility and design
 
-Status: design, 2026-10-18, with the maintainer's decisions (§3). Nothing here is
-implemented.
+Status: design, 2026-10-18, with the maintainer's decisions (§3). P1 is implemented on the
+plugin side, without the core changes it needs, with two temporary deviations (§7).
 
 Where references point:
 - Spec references are to Schemify's `docs/spec/` (`pdk.md`, `plugin-abi.md`, `run.md`,
@@ -548,3 +548,41 @@ Dropped:
 | D1 | Specs | `pdk.md` (§2.1 remote, §4 panel), `plugin-abi.md` (`library`, `user_state`), `format.md` (`lib … plugin`, `remote`, `param <n> -`), `run.md`/`config.md` (`sim spectre`, `sim hspice`, `logs`), `netlist.md` (`hspice`, `{?n}`) | Small | with each item |
 
 A Spectre PDK end to end needs steps 1 and 2. `op()` and gm/ID on it need step 3.
+
+## 7. Implemented (plugin side)
+
+P1, 2026-11-02, without C1, C2 or F2. Interop (`schemify-interop`) is a declared dependency:
+spawned by name, never linked, and in the dev shell through the flake's `interop` input.
+
+- **Configuration.** The committed `remote` record (F2) lives in a plugin-owned file,
+  `pdks.remote` at the project root, one line per family:
+  `remote <family> <dest> models <relpath> dialect <spice|hspice|spectre> [section <s>]`.
+  The plugin checks every field against §4.4 when it reads the file and again before any
+  spawn (`src/remote.rs`). Commands: `pdk.remote.add|trust|refresh|forget`.
+- **Deviation from decision 8 (trust in `user_state`).** Without C2, the trusted
+  destinations are stored per checkout in `.schemify/pdk-manager/trusted`, under the
+  git-ignored `.schemify/`, keyed by the exact destination string. A project can still name
+  a destination but not trust it, and a changed destination asks again.
+- **Deviation from decision 1 (nothing stored locally).** Without C1, a refresh writes the
+  scanned cells, interface only (pins, parameter names, formats; no model text, cards, bins
+  or defaults), to the git-ignored `.schemify/pdk-manager/remote/<family>/`, and rewrites
+  `schemify.project` with `lib <family> path .schemify/pdk-manager/remote/<family>` and
+  `set PDK_MODELS <remote path of the models>`. Every refresh rewrites the cache;
+  `pdk.remote.forget` deletes it and the two rows. Scan output and fallback frames stay in
+  guest memory, and only a one-line outcome reaches the panel or the log. With C1 the cache
+  goes away and the rows become `lib <family> plugin pdk-manager`.
+- **Flow (§4.5).** The probe, agent mode, and the fallback: the remote script comes from the
+  local `schemify-interop pdk-scan --remote-script`, then `ssh … sh -s -- '<path>'…` rounds
+  (at most 16 rounds and 4096 files, only paths under the kit root) feed the local
+  `pdk-scan --stdin`. The ssh argv is exactly §4.4's.
+- **Exports.** `pdk.export <family> <version> xschem|virtuoso` converts a local install with
+  Interop's `xschem-export` / `virtuoso-export`. A remote family is always refused. Imported
+  (ciel) families are refused too: the plugin ABI cannot list a directory, so the plugin
+  does not know their cells.
+- **The store is the kit itself.** A local install keeps the kit's own files (`ROOT`, or
+  `<dir>/root`), read in the order of the recipe's model entries. There is no converted copy:
+  the source is the only lossless form, and SpiceRack re-reads it in milliseconds.
+  `pdk.export F V spice|hspice|spectre|vacask|xyce` runs `schemify-interop pdk-models --from
+  spice --root <kit>` into `<dir>/export/<dialect>`. Exit 1 (written, with losses: lines
+  SpiceRack does not read, or a referenced file the kit lacks) is reported as a warning with
+  the `lost`/`missing` lines, never silently. Remote kits are never stored or converted.

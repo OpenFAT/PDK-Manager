@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the plugin for wasm32-unknown-unknown into ./pdk_manager.wasm (committed; a project
-# loads it with `plugin pdk-manager path <dir>/pdk_manager.wasm`). Fails at 200 KB.
+# Build the plugin for wasm32-unknown-unknown into ./pdk_manager.wasm (committed; the package
+# manifest, schemify.project, names it: `plugin pdk-manager path pdk_manager.wasm`). Fails at 200 KB.
 #
 # Reproducible: CI rebuilds the module and fails when the committed one differs. The bytes
 # depend only on the sources, Cargo.lock and the toolchain: build in `nix develop` (rustc and

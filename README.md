@@ -48,14 +48,12 @@ counts for ASAP7.
 
 ```diff
  schemify 1 project
+   init init.lua
 
  # my own library
  lib mine path lib
 -lib sky130_fd_pr path .schemify/pdks/sky130/<old>/lib/sky130_fd_pr
 -lib tech map .schemify/pdks/sky130/<old>/tech.map
-
- plugin pdk-manager path plugins/pdk-manager
-   grant write_project
 
 -set PDK_ROOT .schemify/pdks/sky130/<old>/root
 -set SKYWATER_MODELS ${PDK_ROOT}/${PDK}/libs.tech/combined
@@ -105,6 +103,15 @@ To use a device that has no class, place it directly, for example `freepdk45:nmo
 `asap7:nmos_slvt`. On ASAP7 the gate length is fixed at 21 nm by the model cards, so the class
 `l` is ignored and `w` becomes a fin count.
 
+## Requires
+
+- [Schemify](https://github.com/OpenFAT/Schemify), native editor.
+- The Interop plugin's CLI, `schemify-interop`
+  ([OpenFAT/Interoperate](https://github.com/OpenFAT/Interoperate)), on `PATH`. The plugin
+  spawns it to import xschem symbols, to export installs, and to scan remote kits. It is
+  never linked into the module.
+- `ssh` on `PATH` for remote PDKs, and `schemify-interop` on the PDK host for agent mode.
+
 ## Install
 
 In your Schemify config (`init.lua`), then `schemify pack sync`:
@@ -118,6 +125,7 @@ schemify.pack.add {
       "spawn:ciel", "spawn:schemify-interop",  -- sky130, gf180mcu, ihp-sg13g2
       "spawn:git",                             -- asap7
       "spawn:curl", "spawn:tar",               -- freepdk45
+      "spawn:ssh",                             -- remote PDKs
     },
   },
 }
@@ -130,18 +138,22 @@ was denied. To pin a commit, add `rev = "<sha>"`.
 <details>
 <summary>Or load it in a single project, from a checkout</summary>
 
-Add this to the project's `schemify.project`:
+Name a Lua file in the project manifest's header (`schemify 1 project`, then `  init init.lua`;
+a project manifest takes no `plugin` records), and add the checkout there as a project package:
 
+```lua
+schemify.pack.add {
+  {
+    path = "<checkout>",
+    grant = {
+      "read_project", "write_project", "spawn:ciel", "spawn:schemify-interop",
+      "spawn:git", "spawn:curl", "spawn:tar", "spawn:ssh",
+    },
+  },
+}
 ```
-plugin pdk-manager path <checkout>/pdk_manager.wasm
-  grant read_project
-  grant write_project
-  grant spawn:ciel
-  grant spawn:schemify-interop
-  grant spawn:git
-  grant spawn:curl
-  grant spawn:tar
-```
+
+The editor loads it once you trust the project's init file.
 
 </details>
 
@@ -151,8 +163,9 @@ plugin pdk-manager path <checkout>/pdk_manager.wasm
 
 ## Use
 
-**View ▸ PDKs** (command `pdk.panel`) opens the panel. It lists installed versions with **Use**
-and **Remove** buttons, the versions available for a family, and the steps of a running install.
+**View ▸ PDKs** (command `pdk.panel`) opens the panel. It lists installed versions with **Use**,
+**Remove**, **→ xschem** and **→ Virtuoso** buttons, the versions available for a family, the
+remote PDKs with **Trust**, **Refresh** and **Forget**, and the steps of a running install.
 
 Everything the panel does is also a command, so scripts and the JSON-RPC interface can drive it:
 
@@ -164,10 +177,31 @@ Everything the panel does is also a command, so scripts and the JSON-RPC interfa
 | `pdk.remove <family> <version>` | Removes an install. Refuses the active one and the locked one |
 | `pdk.prune`, then `pdk.prune.confirm` | Lists, then removes, every install nothing references |
 | `pdk.list_remote [family]` | Refreshes the versions available for a family |
+| `pdk.export <family> <version> xschem\|virtuoso` | Exports a local install's cells with `schemify-interop` into `.schemify/pdks/<family>/<version>/export/` (generated families; never a remote one) |
+| `pdk.remote.add <family> <user@host:/path> <models> <dialect> [section]` | Records a remote PDK in the committed `pdks.remote` |
+| `pdk.remote.trust <family>` | Trusts that exact destination in this checkout (`.schemify/pdk-manager/trusted`) |
+| `pdk.remote.refresh <family>` | Scans the kit over `ssh` and makes it the project's PDK |
+| `pdk.remote.forget <family>` | Deletes its local cache and its manifest rows |
 
 The full behaviour is specified in Schemify's
-[docs/spec/pdk.md](https://github.com/OpenFAT/Schemify/blob/main/docs/spec/pdk.md). Remote and
-proprietary PDKs are a design in progress, in [docs/remote-pdks.md](docs/remote-pdks.md).
+[docs/spec/pdk.md](https://github.com/OpenFAT/Schemify/blob/main/docs/spec/pdk.md).
+
+### Remote PDKs
+
+A proprietary kit stays on its host. `pdks.remote` names it, one line per family:
+
+```
+remote tsmc28 pdk@pdkhost:/proj/pdk/tsmc28/1.3 models models/spectre/toplevel.scs dialect spectre
+```
+
+Refresh runs `schemify-interop pdk-scan` on the host over `ssh` (or, without it there, reads
+the kit's structural lines through a script and scans them locally, in memory). Only the
+cells' interface (pins, parameter names, formats; no model data) is written, to
+`.schemify/pdk-manager/remote/<family>/`, and `set PDK_MODELS` names the corner library's path
+on the host. The plugin's ssh options are fixed; nothing in the project can add one. A
+destination is used only after you trust it in this checkout, and a changed one asks again.
+The design, and what still needs the Schemify core, is in
+[docs/remote-pdks.md](docs/remote-pdks.md).
 
 ## Develop
 
@@ -176,7 +210,7 @@ The plugin is a Rust crate built for `wasm32-unknown-unknown`. The Schemify crat
 pinned to one Schemify commit in `Cargo.toml`.
 
 ```sh
-nix develop                  # Rust 1.95.0 (rust-overlay) with the wasm32 std and rust-lld
+nix develop                  # Rust 1.95.0 (rust-overlay), wasm32 std, rust-lld, schemify-interop
 ./build.sh                   # -> pdk_manager.wasm (fails at 200 KB)
 cargo test                   # pure modules, then the built guest through the real plugin host
 cargo test -- --ignored      # network: real ciel, FreePDK45 and ASAP7 installs simulated in ngspice
@@ -199,6 +233,11 @@ cargo test --config 'patch."https://github.com/OpenFAT/Schemify".schemify-abi.pa
 ```
 
 The patch rewrites `Cargo.lock`. Restore it (`git checkout Cargo.lock`) before you commit.
+
+The dev shell (and so CI) has the real `schemify-interop` from the flake's `interop` input
+(`github:OpenFAT/Interoperate`, pinned in `flake.lock`; `nix flake update interop` bumps it).
+The guest tests put fakes ahead of it on `PATH`; `real_interop_scans_a_remote_kit` runs the
+real one behind a fake `ssh`, and skips while it does not speak `pdk-scan`.
 
 `devices/` and `tests/fixtures/schemify/` hold copies of Schemify files (each has a README).
 Update them whenever you bump `rev`.

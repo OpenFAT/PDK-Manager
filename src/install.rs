@@ -142,7 +142,7 @@ pub fn install_steps(r: &Recipe, version: &str, local: Option<&str>) -> Vec<Step
     s
 }
 
-fn argv(words: &[&str]) -> Vec<String> {
+pub(crate) fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| (*w).to_owned()).collect()
 }
 
@@ -472,7 +472,10 @@ mod tests {
             .collect();
         assert_eq!(cells.len(), 9, "8 cells and the library manifest");
         assert!(got.ends_with(&format!(
-            "devices: write {d}/lib/schemify.project\ntech.map: write {d}/tech.map\nstate: write {d}/STATE\n"
+            "devices: write {d}/lib/schemify.project
+tech.map: write {d}/tech.map
+state: write {d}/STATE
+"
         )));
     }
 

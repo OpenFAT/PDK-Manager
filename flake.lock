@@ -1,5 +1,28 @@
 {
   "nodes": {
+    "interop": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-overlay": [
+          "rust-overlay"
+        ]
+      },
+      "locked": {
+        "lastModified": 1793657134,
+        "narHash": "sha256-ZXyihmDx7N0zc6rY5iws/NigsT4PDOlkw24QjoS2I1E=",
+        "owner": "OpenFAT",
+        "repo": "Interoperate",
+        "rev": "02018a749e23f9e6176266d64a36f023b257fe4c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "OpenFAT",
+        "repo": "Interoperate",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1791594108,
@@ -18,6 +41,7 @@
     },
     "root": {
       "inputs": {
+        "interop": "interop",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay"
       }

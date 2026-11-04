@@ -8,3 +8,4 @@ plugin pdk-manager path pdk_manager.wasm
   grant spawn:git
   grant spawn:curl
   grant spawn:tar
+  grant spawn:ssh
