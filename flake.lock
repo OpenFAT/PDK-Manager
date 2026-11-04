@@ -10,11 +10,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1793825074,
-        "narHash": "sha256-r5DQjZmHeKuXP+kiVXTysJxLMsa+P/gRTVlQuD9RLR0=",
+        "lastModified": 1793833561,
+        "narHash": "sha256-XjOWIukOlvKCAK1vOvjAnpnI4PtXBmhMzKyXs+VDldo=",
         "owner": "OpenFAT",
         "repo": "Interoperate",
-        "rev": "d249348e9718f3419b0b719a31bcc3871a0ca948",
+        "rev": "c4186f87026606d21bdd2ef925cd4fc519a255fe",
         "type": "github"
       },
       "original": {
